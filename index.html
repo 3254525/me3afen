@@ -1109,7 +1109,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   const firebaseConfig = {
     apiKey: "AIzaSyDDod7rBSs6Oa71JufQye6PUkUHZ7iZCVk",
     authDomain: "nour-9bd41.firebaseapp.com",
-    databaseURL: "https://nour-9bd41-default-rtdb.firebaseio.com",
+    databaseURL: "https://nour-9bd41-default-rtdb.europe-west1.firebasedatabase.app",
     projectId: "nour-9bd41",
     storageBucket: "nour-9bd41.firebasestorage.app",
     messagingSenderId: "84586058470",
@@ -8577,7 +8577,7 @@ window.addEventListener('pagehide', function() {
   const pk   = ms.playerKey || ms.playerName;
   if (!code || !pk) return;
 
-  const dbUrl = 'https://nour-9bd41-default-rtdb.firebaseio.com';
+  const dbUrl = 'https://nour-9bd41-default-rtdb.europe-west1.firebasedatabase.app';
 
   // مسح اللاعب دايماً
   const playerUrl = dbUrl + '/nour_rooms/' + code + '/players/' + pk + '.json';
