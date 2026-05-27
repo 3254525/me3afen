@@ -1058,7 +1058,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 /* ===== BOTTOM SHEET ===== */
 .sheet-overlay {
   display:none; position:fixed; inset:0; z-index:8000;
-  background:rgba(0,0,0,0.97); backdrop-filter:blur(8px);
+  background:rgba(10,8,4,0.55); backdrop-filter:blur(16px) saturate(1.1); -webkit-backdrop-filter:blur(16px) saturate(1.1);
   align-items:flex-end; justify-content:center;
 }
 .sheet-overlay.open { display:flex; }
@@ -1911,9 +1911,11 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   // ─── real-time listener — يحدّث اللوحة لكل المستخدمين فور أي تغيير ───
   // ★ resilient: لو أول قراءة فشلت (لسه مفيش Auth) نضمن Auth ونحاول تاني،
   //    عشان اللوحة تظهر فوراً للزوار قبل تسجيل الدخول وما تعلّقش على "جاري التحميل".
-  let _lbOk = false, _lbRetry = 0;
+  let _lbOk = false, _lbRetry = 0, _lbUnsub = null;
   function _attachLbListener() {
-    onValue(ref(db, LB_PATH), (snap) => {
+    // ★ شيل أي مستمع قديم قبل ما نحط جديد (يمنع تراكم مستمعين عند إعادة المحاولة)
+    if (_lbUnsub) { try { _lbUnsub(); } catch (e) {} _lbUnsub = null; }
+    _lbUnsub = onValue(ref(db, LB_PATH), (snap) => {
       _lbOk = true; _lbRetry = 0;
       const data = snap.val() || {};
       window._renderLbFromData(data);
@@ -6391,8 +6393,8 @@ function resetSurahProgress(surahName) {
   const key = 'nour_revprog_' + currentUser.username;
   let d = {};
   try { d = JSON.parse(localStorage.getItem(key) || '{}'); } catch {}
-  if (d[surahName]) { d[surahName].inProgress = false; }
-  else { d[surahName] = { done:0, total:0, streak:0, inProgress:false }; }
+  // ★ فضّي السورة تمامًا (تقدّم + مكان وقوف + شريط أخضر) ترجع زي سورة جديدة
+  delete d[surahName];
   localStorage.setItem(key, JSON.stringify(d));
   // ★ sync على Firebase
   if (typeof window.fbSaveRevProg === 'function') {
@@ -6434,7 +6436,10 @@ function renderReviewGrid() {
   empty.style.display = 'none';
 
   list.forEach(s => {
-    const pct = s.prog.total > 0 ? Math.round((s.prog.done/s.prog.total)*100) : 0;
+    const rawPct = s.prog.total > 0 ? Math.round((s.prog.done/s.prog.total)*100) : 0;
+    // ★ أي سورة بدأتها (أو فيها تقدّم) يبان شريطها الأخضر بحد أدنى واضح حتى لو التقدّم 1%
+    const _started = (s.prog.inProgress === true) || ((s.prog.done||0) > 0);
+    const pct = (_started && rawPct > 0 && rawPct < 10) ? 10 : rawPct;
     const card = document.createElement('div');
     card.className = 'surah-review-card';
     card.setAttribute('data-surah', s.name);
@@ -7748,14 +7753,19 @@ function _renderMultiQuestion() {
   const wrap = document.getElementById('multiChoicesWrap');
   wrap.innerHTML = '';
   const isAyah = q.qtype === 'next' || q.qtype === 'prev' || q.qtype === 'similar' || q.qtype === 'firstword' || q.qtype === 'reverse';
-  wrap.style.gridTemplateColumns = isAyah ? '1fr' : '1fr 1fr';
+  // النص المعروض لكل اختيار + أطول اختيار (نقرر بيه الأعمدة وحجم الخط للوضوح)
+  const _disp = choices.map(ch => q.qtype === 'num' ? 'آية ' + toArabicNum(parseInt(ch)) : String(ch));
+  const _maxLen = Math.max.apply(null, _disp.map(t => t.length));
+  const oneCol = isAyah || _maxLen > 14;            // الاختيارات الطويلة تاخد عمود كامل
+  wrap.style.gridTemplateColumns = oneCol ? '1fr' : '1fr 1fr';
+  const _fs = isAyah ? 19 : (_maxLen > 24 ? 15 : _maxLen > 16 ? 16 : _maxLen > 10 ? 18 : 20);
 
-  choices.forEach(ch => {
+  choices.forEach((ch, ci) => {
     const btn = document.createElement('button');
-    const display = q.qtype === 'num' ? 'آية ' + toArabicNum(parseInt(ch)) : ch;
+    const display = _disp[ci];
     btn.textContent = display;
     btn.dataset.ch = ch;
-    btn.style.cssText = `background:rgba(255,254,249,0.05);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:14px 12px;font-family:${isAyah?"'Amiri',serif":"'Cairo',sans-serif"};font-size:${isAyah?'20px':'20px'};color:var(--cream);cursor:pointer;transition:all .2s;direction:rtl;text-align:${isAyah?'right':'center'};`;
+    btn.style.cssText = `background:rgba(255,254,249,0.05);border:1.5px solid rgba(201,151,58,0.28);border-radius:14px;padding:13px 14px;font-family:${isAyah?"'Amiri',serif":"'Cairo',sans-serif"};font-size:${_fs}px;line-height:1.7;color:var(--cream);cursor:pointer;transition:all .2s;direction:rtl;text-align:${isAyah?'right':'center'};white-space:normal;word-break:break-word;overflow-wrap:break-word;min-height:54px;display:flex;align-items:center;justify-content:${isAyah?'flex-start':'center'};`;
     btn.onclick = (e) => _multiAnswer(ch, q.blank, q, btn, e);
     wrap.appendChild(btn);
   });
@@ -7797,6 +7807,9 @@ function _renderMultiQuestion() {
   };
 
   updateTimerUI(MULTI_Q_TIME);
+
+  // ★ أقفل أي مؤقت قديم شغّال قبل ما نبدأ الجديد (يمنع جري مؤقتين مع بعض = عدّ سريع يبوّظ اللعبة)
+  if (multiState.questionTimer) clearInterval(multiState.questionTimer);
 
   multiState.questionTimer = setInterval(() => {
     multiState.timeLeft--;
