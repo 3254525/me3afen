@@ -6315,7 +6315,7 @@ function markSurahReviewStarted(surahName, total) {
   try { d = JSON.parse(localStorage.getItem(key) || '{}'); } catch {}
   const prev = d[surahName] || {done:0, total:0, streak:0};
   // ★ لو السورة كانت مكتملة (الشريط مليان) وبدأناها تاني → نبدأ من الصفر (شريط فاضي)
-  const wasComplete = (prev.total > 0) && ((prev.done || 0) >= prev.total);
+  const wasComplete = (prev.total > 0) && (((prev.done || 0) >= prev.total) || prev.inProgress === false);
   d[surahName] = {
     ...prev,
     done: wasComplete ? 0 : (prev.done || 0),
@@ -6755,7 +6755,7 @@ function startSurahReview(surahName) {
   state.questions = questions;
   // ★ كمّل من مكان الوقوف لو السورة مش مكتملة؛ المكتملة تبدأ من الأول
   const _prog = getSurahReviewProgress(_targetSurah);
-  const _wasComplete = (_prog.total > 0) && ((_prog.done || 0) >= _prog.total);
+  const _wasComplete = (_prog.total > 0) && (((_prog.done || 0) >= _prog.total) || _prog.inProgress === false);
   let _resumeIdx = 0;
   if (!_wasComplete &&
       typeof _prog.pos === 'number' && _prog.pos > 0 && _prog.pos < questions.length) {
