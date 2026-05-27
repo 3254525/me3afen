@@ -4355,11 +4355,11 @@ function selectJuzFromDropdown(item) {
   const totalAyahs = item.totalAyahs;
   safeHTML('surahHint', '✅ الجزء ' + toArabicNum(item.num) + ' — <span style="color:var(--gold)">' + toArabicNum(totalAyahs) + ' آية</span> — محلي ⚡ بدون إنترنت');
   document.getElementById('surahHint').style.color = 'var(--emerald-light)';
-  selectedQCount = Math.min(totalAyahs, 50);
+  selectedQCount = totalAyahs;
   document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
   const qcountLbl = document.getElementById('qcountLabelText');
   if (qcountLbl) qcountLbl.textContent = 'عدد الأسئلة من الجزء ' + toArabicNum(item.num);
-  _showDualSlider(Math.min(totalAyahs, 50));
+  _showDualSlider(totalAyahs);
   updateQcountSliderMax();
 }
 
@@ -4377,11 +4377,11 @@ function onJuzFilterChange() {
   const totalAyahs = segs.reduce((sum,seg)=>sum+(seg.e-seg.a+1), 0);
   safeHTML('surahHint', '✅ الجزء ' + toArabicNum(selectedJuz) + ' — <span style="color:var(--gold)">' + toArabicNum(totalAyahs) + ' آية</span> — محلي ⚡ بدون إنترنت');
   document.getElementById('surahHint').style.color = 'var(--emerald-light)';
-  selectedQCount = Math.min(totalAyahs, 50);
+  selectedQCount = totalAyahs;
   document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
   const qcountLbl = document.getElementById('qcountLabelText');
   if (qcountLbl) qcountLbl.textContent = 'عدد الأسئلة من الجزء ' + toArabicNum(selectedJuz);
-  _showDualSlider(Math.min(totalAyahs, 50));
+  _showDualSlider(totalAyahs);
   updateQcountSliderMax();
 }
 
@@ -5920,7 +5920,7 @@ function openGameSheet() {
     } else if (selectedJuz) {
       const segs = JUZ_SURAHS[parseInt(selectedJuz)] || [];
       const total = segs.reduce((s,seg)=>s+(seg.e-seg.a+1), 0);
-      if (total > 0) _showDualSlider(Math.min(total, 50));
+      if (total > 0) _showDualSlider(total);
     } else {
       _showRandomSlider();
     }
@@ -8028,18 +8028,21 @@ function _showMultiResults() {
     window.currentUser = _cu;
     if (!_cu.isGuest) {
       saveCurrentUser();
+      // المسجّل: زيادة atomic — fbIncrementScore بترفع اللوحة بالقيمة الصحيحة بعد الـtransaction،
+      // فمفيش كتابة مطلقة قديمة تطغى عليها وتضيّع نقاطه.
       if (typeof window.fbIncrementScore === 'function') {
         window.fbIncrementScore(_cu.username, multiState.myScore, multiState.myScore, 1);
       }
-    }
-    // رفع النقاط للوحة الشرف (مسجل وضيف)
-    if (typeof window.fbSaveUser === 'function') {
-      window.fbSaveUser(_cu.username, {
-        totalHasanat: _cu.totalHasanat,
-        totalScore:   _cu.totalScore,
-        totalGames:   _cu.totalGames,
-        isGuest:      _cu.isGuest || false,
-      });
+    } else {
+      // الضيف: مفيش transaction، فنرفع نقاطه للوحة مباشرة
+      if (typeof window.fbSaveUser === 'function') {
+        window.fbSaveUser(_cu.username, {
+          totalHasanat: _cu.totalHasanat,
+          totalScore:   _cu.totalScore,
+          totalGames:   _cu.totalGames,
+          isGuest:      true,
+        });
+      }
     }
     updateHomeStats();
   }
@@ -8178,17 +8181,17 @@ function multiLeaveRoom() {
       window.currentUser = _cu;
       if (!_cu.isGuest) {
         saveCurrentUser();
+        // المسجّل: زيادة atomic بترفع اللوحة بالقيمة الصحيحة (مفيش كتابة مطلقة قديمة تطغى عليها)
         if (typeof window.fbIncrementScore === 'function') {
           window.fbIncrementScore(_cu.username, multiState.myScore, multiState.myScore, 0);
         }
-      }
-      // رفع اللوحة للجميع
-      if (typeof window.fbSaveUser === 'function' && (_cu.totalScore || 0) > 0) {
+      } else if (typeof window.fbSaveUser === 'function' && (_cu.totalScore || 0) > 0) {
+        // الضيف فقط: رفع مباشر للوحة
         window.fbSaveUser(_cu.username, {
           totalHasanat: _cu.totalHasanat,
           totalScore:   _cu.totalScore,
           totalGames:   _cu.totalGames,
-          isGuest:      _cu.isGuest || false,
+          isGuest:      true,
         });
       }
       updateHomeStats();
