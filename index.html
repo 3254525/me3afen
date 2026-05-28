@@ -1781,20 +1781,24 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       return remove(ref(db, ROOMS_PATH + roomCode));
     },
 
-    // ★ نقاط نهائية في مسار مستقل تمامًا: nour_room_results/<code>/<pk>
-    //   ده بيتكتب مرة واحدة لما اللعبة تخلص، ومحدش بيكتب عليه ومحدش بيمسحه.
-    //   ضمانة مطلقة إن النقاط بتظهر صح للكل آخر الغرفة.
+    // ★ نقاط نهائية جوّا الغرفة نفسها: nour_rooms/<code>/finalScores/<pk>
+    //   جوّا nour_rooms اللي أكيد مسموح في القواعد (المضيف بيكتب فيه عادي).
+    //   بيتكتب مع كل إجابة + في آخر اللعبة، وبيتأكد من تسجيل الدخول المجهول أولاً.
     saveFinalScore: function(roomCode, playerKey, score, playerName) {
-      const path = 'nour_room_results/' + roomCode + '/' + playerKey;
-      return set(ref(db, path), {
+      const path = ROOMS_PATH + roomCode + '/finalScores/' + playerKey;
+      const _doSet = () => set(ref(db, path), {
         name: playerName || 'لاعب',
         score: score || 0,
         ts: Date.now(),
       });
+      if (typeof window.fbSignInAnon === 'function' && !auth.currentUser) {
+        return window.fbSignInAnon().then(_doSet).catch(_doSet);
+      }
+      return _doSet();
     },
 
     getFinalScores: function(roomCode, callback) {
-      get(ref(db, 'nour_room_results/' + roomCode)).then((snap) => {
+      get(ref(db, ROOMS_PATH + roomCode + '/finalScores')).then((snap) => {
         callback(snap.exists() ? snap.val() : null);
       }).catch(() => callback(null));
     },
@@ -2232,7 +2236,6 @@ function _callWhenReady(fn, args) {
       </div>
       <button type="submit" class="login-btn">دخول ✨</button>
       <div style="text-align:center;margin-top:10px;">
-        <a href="javascript:void(0)" onclick="startRecovery()" style="font-size:12px;color:rgba(245,217,139,0.55);text-decoration:none;border-bottom:1px dashed rgba(245,217,139,0.3);padding-bottom:1px;">🔑 نسيت كلمة المرور؟</a>
       </div>
     </form>
 
@@ -2256,11 +2259,6 @@ function _callWhenReady(fn, args) {
         <label>تأكيد كلمة المرور</label>
         <span class="login-field-icon">✅</span>
         <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور...">
-      </div>
-      <div class="login-field">
-        <label>ما لونك المفضّل؟ (لاسترجاع الحساب)</label>
-        <span class="login-field-icon">🎨</span>
-        <input type="text" id="regSecA" placeholder="مثلاً: أزرق، أحمر، أخضر... (افتكره كويس!)">
       </div>
       <button type="submit" class="login-btn">إنشاء الحساب 🌟</button>
     </form>
@@ -3107,7 +3105,6 @@ function doRegister() {
   const user = document.getElementById('regUser').value.trim();
   const pass = document.getElementById('regPass').value;
   const pass2 = document.getElementById('regPass2').value;
-  const secA = document.getElementById('regSecA').value.trim();
   if (!name || !user || !pass) { showLoginErr('أدخل جميع البيانات (الاسم، اسم المستخدم، كلمة المرور)'); return; }
   if (name.length < 2) { showLoginErr('الاسم يجب أن يكون حرفين على الأقل'); return; }
   if (name.length > 30) { showLoginErr('الاسم طويل جداً (٣٠ حرف كحد أقصى)'); return; }
@@ -3118,7 +3115,6 @@ function doRegister() {
   }
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
-  if (!secA || secA.length < 2) { showLoginErr('اكتب لونك المفضّل (حرفين على الأقل) — هتحتاجه لو نسيت كلمة المرور'); return; }
 
   // ★ مهم: نمسح أي session قديمة عشان loginSuccess ما تتعطّلش
   currentUser = null;
@@ -3130,9 +3126,6 @@ function doRegister() {
   const _onReg = () => {
     const defaultData = createDefaultUserData();
     defaultData.name = name; // ★ الاسم للعرض (يظهر للناس بدل username)
-    // ★ سؤال الأمان واحد ثابت: اللون المفضّل (الإجابة مخزّنة مشفّرة + lowercase للمقارنة)
-    defaultData.secQ = 'color';
-    defaultData.secA = btoa(unescape(encodeURIComponent(secA.toLowerCase())));
     // ★ لو فيه نقاط محلية للاسم ده (من قبل التوحيد) — احتفظ بيها بدل ما نبدأ من صفر
     try {
       const _lu = (getUsers() || {})[user] || {};
@@ -3259,139 +3252,6 @@ function editDisplayName() {
 }
 window.editDisplayName = editDisplayName;
 
-// ★ استرجاع الحساب — سؤال الأمان واحد ثابت: اللون المفضّل (فوري، من غير ما يستنّى حد)
-
-function startRecovery() {
-  const ex = document.getElementById('_recoveryModal'); if (ex) ex.remove();
-  let suggestedUser = '';
-  try { suggestedUser = localStorage.getItem('nour_last_user') || ''; } catch (e) {}
-
-  const overlay = document.createElement('div');
-  overlay.id = '_recoveryModal';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(10,8,4,0.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
-  overlay.innerHTML = `
-    <div style="background:linear-gradient(160deg,#1a1407,#0f0b04);border:1.5px solid var(--gold);border-radius:18px;padding:24px;max-width:380px;width:100%;direction:rtl;font-family:'Cairo',sans-serif;box-shadow:0 0 40px rgba(201,151,58,0.25);">
-      <div id="_recBody"></div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  // ── الخطوة ١: اسم المستخدم ──
-  const step1 = () => {
-    overlay.querySelector('#_recBody').innerHTML = `
-      <div style="text-align:center;">
-        <div style="font-size:34px;margin-bottom:6px;">🔑</div>
-        <div style="font-size:17px;font-weight:800;color:var(--gold);margin-bottom:14px;">نسيت كلمة المرور</div>
-      </div>
-      <div style="margin-bottom:10px;">
-        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">اسم المستخدم بتاعك</label>
-        <input id="_recUser" type="text" value="${suggestedUser}" placeholder="اكتب اسم المستخدم" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
-      </div>
-      <div id="_recErr" style="font-size:12px;color:#FF9E9E;text-align:center;min-height:18px;margin-bottom:8px;"></div>
-      <div style="display:flex;gap:10px;">
-        <button id="_recCancel" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">إلغاء</button>
-        <button id="_recNext" style="flex:2;padding:11px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">التالي ←</button>
-      </div>`;
-    overlay.querySelector('#_recCancel').onclick = () => overlay.remove();
-    overlay.querySelector('#_recNext').onclick = () => {
-      const u = overlay.querySelector('#_recUser').value.trim();
-      if (!u) { overlay.querySelector('#_recErr').textContent = 'اكتب اسم المستخدم'; return; }
-      // جيب بيانات اللاعب (محلي أو Firebase)
-      const _proceed = (data) => {
-        if (!data) { overlay.querySelector('#_recErr').textContent = '❌ مفيش حساب بالاسم ده'; return; }
-        if (!data.secQ || !data.secA) {
-          // حساب قديم بدون سؤال أمان — fallback لواتساب
-          overlay.querySelector('#_recBody').innerHTML = `
-            <div style="text-align:center;">
-              <div style="font-size:34px;margin-bottom:6px;">💬</div>
-              <div style="font-size:16px;font-weight:800;color:var(--gold);margin-bottom:10px;">حساب قديم</div>
-              <div style="font-size:13px;color:rgba(245,217,139,0.7);margin-bottom:16px;line-height:1.7;">الحساب ده اتعمل قبل نظام سؤال الأمان. تواصل معانا على واتساب وهنساعدك.</div>
-              <div style="display:flex;gap:10px;">
-                <button id="_recBack" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">إلغاء</button>
-                <button id="_recWA" style="flex:2;padding:11px;background:#25D366;border:none;border-radius:10px;color:#fff;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">💬 افتح واتساب</button>
-              </div>
-            </div>`;
-          overlay.querySelector('#_recBack').onclick = () => overlay.remove();
-          overlay.querySelector('#_recWA').onclick = () => {
-            const msg = 'السلام عليكم 🌙\n\nنسيت كلمة المرور بتاعت حسابي في تطبيق نور.\nاسم المستخدم: ' + u + '\n\nممكن مساعدتي؟\nشكرًا 🤍';
-            window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
-            overlay.remove();
-          };
-          return;
-        }
-        step2(u, data.secA);
-      };
-      const users = getUsers();
-      if (users[u] && users[u].secQ) { _proceed(users[u]); return; }
-      if (typeof window.fbGetUserData === 'function') {
-        overlay.querySelector('#_recErr').textContent = '⏳ جاري التحقق...';
-        window.fbGetUserData(u, (data) => _proceed(data || users[u]));
-      } else {
-        _proceed(users[u]);
-      }
-    };
-    setTimeout(() => overlay.querySelector(suggestedUser ? '#_recNext' : '#_recUser').focus(), 100);
-  };
-
-  // ── الخطوة ٢: السؤال + الإجابة + كلمة المرور الجديدة ──
-  const step2 = (u, secAEnc) => {
-    const question = 'ما لونك المفضّل؟';
-    overlay.querySelector('#_recBody').innerHTML = `
-      <div style="text-align:center;">
-        <div style="font-size:30px;margin-bottom:6px;">🛡️</div>
-        <div style="font-size:16px;font-weight:800;color:var(--gold);margin-bottom:4px;">سؤال الأمان</div>
-        <div style="font-size:11px;color:rgba(245,217,139,0.55);margin-bottom:14px;">اللاعب: <b style="color:var(--gold);">${u}</b></div>
-      </div>
-      <div style="background:rgba(201,151,58,0.08);border:1px solid rgba(201,151,58,0.25);border-radius:10px;padding:12px;margin-bottom:12px;text-align:center;">
-        <div style="font-size:14px;color:var(--cream);font-weight:700;">${question}</div>
-      </div>
-      <div style="margin-bottom:10px;">
-        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">إجابتك</label>
-        <input id="_recAns" type="text" placeholder="نفس اللي كتبته وقت التسجيل" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
-      </div>
-      <div style="margin-bottom:12px;">
-        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">كلمة المرور الجديدة</label>
-        <input id="_recPass" type="password" placeholder="٤ حروف على الأقل" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
-      </div>
-      <div id="_recErr" style="font-size:12px;color:#FF9E9E;text-align:center;min-height:18px;margin-bottom:8px;"></div>
-      <div style="display:flex;gap:10px;">
-        <button id="_recBack" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">رجوع</button>
-        <button id="_recSubmit" style="flex:2;padding:11px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">🔑 تغيير كلمة المرور</button>
-      </div>`;
-    overlay.querySelector('#_recBack').onclick = () => step1();
-    overlay.querySelector('#_recSubmit').onclick = () => {
-      const ans = overlay.querySelector('#_recAns').value.trim().toLowerCase();
-      const np  = overlay.querySelector('#_recPass').value;
-      if (!ans) { overlay.querySelector('#_recErr').textContent = 'اكتب إجابتك'; return; }
-      if (np.length < 4) { overlay.querySelector('#_recErr').textContent = 'كلمة المرور قصيرة (٤ حروف على الأقل)'; return; }
-      // قارن الإجابة المخزّنة (مشفّرة) بالإجابة الجديدة
-      let expectedAns;
-      try { expectedAns = decodeURIComponent(escape(atob(secAEnc))); }
-      catch (e) { overlay.querySelector('#_recErr').textContent = 'مشكلة في بيانات الحساب'; return; }
-      if (ans !== expectedAns) { overlay.querySelector('#_recErr').textContent = '❌ الإجابة غلط'; return; }
-      // طبّق التغيير محلياً
-      try {
-        const users = getUsers();
-        if (users[u]) { users[u].password = btoa(np); saveUsers(users); }
-      } catch (e) {}
-      if (typeof window.fbResetPassword === 'function') {
-        window.fbResetPassword(u, np, () => {}, () => {});
-      }
-      // شاشة نجاح
-      overlay.querySelector('#_recBody').innerHTML = `
-        <div style="text-align:center;padding:10px 0;">
-          <div style="font-size:46px;margin-bottom:8px;">✅</div>
-          <div style="font-size:18px;font-weight:800;color:#7DFFC9;margin-bottom:8px;">اتغيّرت كلمة المرور</div>
-          <div style="font-size:12px;color:rgba(245,217,139,0.7);margin-bottom:18px;">ادخل دلوقتي بكلمة المرور الجديدة</div>
-          <button id="_recDone" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">تمام</button>
-        </div>`;
-      overlay.querySelector('#_recDone').onclick = () => overlay.remove();
-    };
-    setTimeout(() => overlay.querySelector('#_recAns').focus(), 100);
-  };
-
-  step1();
-}
-window.startRecovery = startRecovery;
 
 function _finishLogin(username, isGuest) {
   document.getElementById('loginScreen').classList.add('hide');
@@ -8269,6 +8129,12 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
       }
     };
     _doWrite(1);
+    // ★★ كمان نكتب في الغرفة (finalScores) مع كل إجابة (مش بس آخر اللعبة)
+    //    كده نقطة اللاعب موجودة في مكان آمن طول الوقت، ومحدش بيمسحه.
+    if (typeof window.fbMulti.saveFinalScore === 'function') {
+      const _nm = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
+      window.fbMulti.saveFinalScore(multiState.roomCode, pk, multiState.myScore, _nm);
+    }
     // تحديث الـ cache فوراً عشان live scores تتغير على طول
     if (!window._multiRoomCache) window._multiRoomCache = { players: {} };
     if (!window._multiRoomCache.players) window._multiRoomCache.players = {};
@@ -8370,7 +8236,7 @@ function _showMultiResults() {
   const pk = multiState.playerKey || multiState.playerName;
   const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
   if (typeof window.fbMulti !== 'undefined') {
-    // ★★ الحل الجذري: نكتب النقطة النهائية في مسار مستقل تمامًا nour_room_results/<code>/<pk>
+    // ★★ الحل الجذري: نكتب النقطة النهائية في finalScores جوّا الغرفة
     //    محدش بيكتب على المسار ده ومحدش بيمسحه. ضمانة مطلقة إن النقاط بتظهر صح.
     if (typeof window.fbMulti.saveFinalScore === 'function') {
       const _saveDedicated = (attempt) => {
@@ -8449,6 +8315,15 @@ function _showMultiResults() {
   document.getElementById('multiGameArea').style.display = 'none';
   document.getElementById('multiResults').style.display = 'block';
 
+  // ★★ نظام النقاط الـmonotonic: النتيجة المعروضة مرة متنزلش أبدًا.
+  //    لو لاعب ظهر بـ٥٠، يفضل ٥٠ حتى لو قراءة لاحقة رجّعت صفر (بسبب reset/تأخير شبكة).
+  //    ده بيحل المشكلة نهائيًا من ناحية العرض.
+  window._lockedScores = {}; // reset لكل نتيجة جديدة
+  const _recordMax = (key, val) => {
+    window._lockedScores[key] = Math.max(window._lockedScores[key] || 0, val || 0);
+    return window._lockedScores[key];
+  };
+
   // ★ helpers: نختار أفضل قيمة متاحة لكل لاعب (الأولوية لـfinalScore اللي مفيش حاجة تكتب عليه)
   const _bestScore = (p) => Math.max(
     (p && typeof p.finalScore === 'number') ? p.finalScore : 0,
@@ -8469,7 +8344,9 @@ function _showMultiResults() {
       score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
     };
   }
-  const sorted = Object.entries(players).filter(([, p]) => p != null).sort((a,b) => _bestScore(b[1]) - _bestScore(a[1]));
+  // سجّل أعلى قيمة لكل لاعب (monotonic)
+  Object.entries(players).forEach(([u, p]) => { if (p != null) _recordMax(u, _bestScore(p)); });
+  const sorted = Object.entries(players).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
   const medals = ['🥇','🥈','🥉','🎖️'];
 
   const winner = sorted[0];
@@ -8482,7 +8359,7 @@ function _showMultiResults() {
     `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
       <span style="font-size:22px;">${medals[i]||'👤'}</span>
       <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
-      <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_bestScore(p))}</span>
+      <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
     </div>`
   ).join('');
 
@@ -8524,7 +8401,7 @@ function _showMultiResults() {
               score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
             };
           }
-          const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _bestScore(b[1]) - _bestScore(a[1]));
+          const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
           const freshWinner = freshSorted[0];
           const freshIsWinner = freshWinner && freshWinner[0] === pk;
           const winnerEl = document.getElementById('multiWinnerName');
@@ -8538,7 +8415,7 @@ function _showMultiResults() {
             `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
               <span style="font-size:22px;">${medals[i]||'👤'}</span>
               <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
-              <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_bestScore(p))}</span>
+              <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
             </div>`
           ).join('');
         });
