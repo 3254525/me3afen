@@ -2212,13 +2212,21 @@ function _callWhenReady(fn, args) {
         <input type="password" id="loginPass" name="password" autocomplete="current-password" placeholder="••••••••">
       </div>
       <button type="submit" class="login-btn">دخول ✨</button>
+      <div style="text-align:center;margin-top:10px;">
+        <a href="javascript:void(0)" onclick="startRecovery()" style="font-size:12px;color:rgba(245,217,139,0.55);text-decoration:none;border-bottom:1px dashed rgba(245,217,139,0.3);padding-bottom:1px;">🔑 نسيت كلمة المرور؟</a>
+      </div>
     </form>
 
     <form id="registerForm" autocomplete="on" onsubmit="event.preventDefault(); doRegister(); return false;" style="display:none;margin:0;">
       <div class="login-field">
-        <label>اسم المستخدم</label>
+        <label>الاسم (للعرض)</label>
+        <span class="login-field-icon">✨</span>
+        <input type="text" id="regName" name="name" autocomplete="name" placeholder="اسمك زي ما هتظهر للناس">
+      </div>
+      <div class="login-field">
+        <label>اسم المستخدم (للدخول)</label>
         <span class="login-field-icon">👤</span>
-        <input type="text" id="regUser" name="username" autocomplete="username" placeholder="اختر اسمك...">
+        <input type="text" id="regUser" name="username" autocomplete="username" placeholder="مثلاً: mohamed_2025 — لازم يكون فريد">
       </div>
       <div class="login-field">
         <label>كلمة المرور</label>
@@ -2939,6 +2947,15 @@ function createDefaultUserData() {
   return { totalScore:0, totalGames:0, totalHasanat:0, streak:0, lastPlay:null };
 }
 
+// ★ يرجّع الاسم اللي يظهر للناس (الـ Name اللي اختاره وقت التسجيل)
+//   لو مفيش name مخصّص (حسابات قديمة أو ضيوف) يرجع username.
+function _displayName(u) {
+  if (!u) return '';
+  if (typeof u === 'string') return u; // مرّروا اسم خام
+  return u.name || u.username || '';
+}
+window._displayName = _displayName;
+
 function switchTab(tab) {
   document.querySelectorAll('.login-tab').forEach((t,i) => t.classList.toggle('active', (i===0&&tab==='login')||(i===1&&tab==='register')));
   document.getElementById('loginForm').style.display = tab==='login' ? 'block' : 'none';
@@ -3062,14 +3079,17 @@ function doLogin() {
 }
 
 function doRegister() {
+  const name = document.getElementById('regName').value.trim();
   const user = document.getElementById('regUser').value.trim();
   const pass = document.getElementById('regPass').value;
   const pass2 = document.getElementById('regPass2').value;
-  if (!user || !pass) { showLoginErr('أدخل جميع البيانات'); return; }
-  if (user.length < 3) { showLoginErr('الاسم يجب أن يكون ٣ أحرف على الأقل'); return; }
-  // ★ امنع الأسماء الطويلة جداً اللي ممكن تطلّع إيميل غير صالح (حد Firebase ٦٤ حرف للإيميل)
+  if (!name || !user || !pass) { showLoginErr('أدخل جميع البيانات (الاسم، اسم المستخدم، كلمة المرور)'); return; }
+  if (name.length < 2) { showLoginErr('الاسم يجب أن يكون حرفين على الأقل'); return; }
+  if (name.length > 30) { showLoginErr('الاسم طويل جداً (٣٠ حرف كحد أقصى)'); return; }
+  if (user.length < 3) { showLoginErr('اسم المستخدم يجب أن يكون ٣ أحرف على الأقل'); return; }
+  // ★ امنع أسماء المستخدم الطويلة جداً اللي ممكن تطلّع إيميل غير صالح (حد Firebase ٦٤ حرف للإيميل)
   if (typeof window._encodeKey === 'function' && window._encodeKey(user).length > 60) {
-    showLoginErr('الاسم طويل جداً — اختصره شوية (يفضّل أقل من ١٥ حرف عربي)'); return;
+    showLoginErr('اسم المستخدم طويل جداً — اختصره شوية (يفضّل أقل من ١٥ حرف عربي)'); return;
   }
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
@@ -3083,6 +3103,15 @@ function doRegister() {
   // نجاح التسجيل في Firebase
   const _onReg = () => {
     const defaultData = createDefaultUserData();
+    defaultData.name = name; // ★ الاسم للعرض (يظهر للناس بدل username)
+    // ★ كود استرجاع: لو نسي كلمة المرور يستخدمه لإعادة الضبط
+    const recoveryCode = (() => {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // بدون 0/O/I/1 للوضوح
+      let c = '';
+      for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+      return c;
+    })();
+    defaultData.recoveryCode = btoa(recoveryCode); // مخزّن مشفّر زي الباسورد
     // ★ لو فيه نقاط محلية للاسم ده (من قبل التوحيد) — احتفظ بيها بدل ما نبدأ من صفر
     try {
       const _lu = (getUsers() || {})[user] || {};
@@ -3094,12 +3123,13 @@ function doRegister() {
     if (typeof window.fbSaveFullUserData === 'function') {
       window.fbSaveFullUserData(user, defaultData);
     }
-    if (typeof window.fbSaveUser === 'function' && defaultData.totalScore > 0) {
-      window.fbSaveUser(user, Object.assign({}, defaultData, { isGuest: false }));
+    if (typeof window.fbSaveUser === 'function') {
+      window.fbSaveUser(user, Object.assign({}, defaultData, { isGuest: false, name: name }));
     }
     if (typeof window._markAuthDone === 'function') window._markAuthDone();
     window._registering = false;
-    loginSuccess(user, defaultData);
+    // ★ أظهر كود الاسترجاع بشكل بارز قبل ما يدخل
+    _showRecoveryCodeAlert(recoveryCode, () => loginSuccess(user, defaultData));
   };
   const _onErr = (errMsg) => { window._registering = false; showLoginErr(errMsg); };
 
@@ -3116,6 +3146,23 @@ function doRegister() {
   };
   _tryRegister(0);
 }
+
+// ★ رجوع سريع من وضع الضيف لحساب اللاعب المحفوظ بدوسة واحدة
+function _switchBackToSaved() {
+  try {
+    const lastUser = localStorage.getItem('nour_last_user');
+    if (!lastUser) { doLogout(); return; }
+    const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
+    const data  = users[lastUser];
+    if (!data) { doLogout(); return; }
+    // أعد الدخول مباشرة للحساب المحفوظ (نفس مسار auto-login)
+    loginSuccess(lastUser, data, false);
+    showToast('✅ رجعت لحساب: ' + (data.name || lastUser));
+  } catch (e) {
+    doLogout();
+  }
+}
+window._switchBackToSaved = _switchBackToSaved;
 
 function guestLogin() {
   const guestName = 'ضيف_' + Math.floor(Math.random()*9999);
@@ -3160,9 +3207,129 @@ function loginSuccess(username, data, isGuest=false) {
 }
 window.loginSuccess = loginSuccess;
 
+// ★ السماح للاعب بتغيير اسمه للعرض (للحسابات القديمة + لو حد عايز يغيّر اسمه)
+function editDisplayName() {
+  if (!currentUser) return;
+  if (currentUser.isGuest) { showToast('🕊️ الضيوف ما يقدروش يغيّروا الاسم — سجّل حساب أولاً'); return; }
+  const cur = currentUser.name || currentUser.username || '';
+  const ne = prompt('اكتب الاسم اللي تحبّ يظهر للناس (مش اسم المستخدم):', cur);
+  if (ne === null) return; // ألغى
+  const n = ne.trim();
+  if (!n) { showToast('⚠️ الاسم مش ممكن يكون فاضي'); return; }
+  if (n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
+  currentUser.name = n;
+  window.currentUser = currentUser;
+  saveCurrentUser();
+  // حدّث Firebase (اللوحة + البيانات الكاملة)
+  if (typeof window.fbSaveUser === 'function') {
+    window.fbSaveUser(currentUser.username, {
+      totalHasanat: currentUser.totalHasanat || 0,
+      totalScore:   currentUser.totalScore   || 0,
+      totalGames:   currentUser.totalGames   || 0,
+      isGuest:      false,
+      name:         n,
+    });
+  }
+  if (typeof window.fbSaveFullUserData === 'function') {
+    window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n });
+  }
+  // حدّث العرض على الشاشة
+  const el = document.getElementById('userNameDisplay');
+  if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
+  showToast('✅ تم تغيير اسمك إلى: ' + n);
+  if (typeof renderLeaderboard === 'function') renderLeaderboard();
+}
+window.editDisplayName = editDisplayName;
+
+// ★ يعرض كود الاسترجاع بشكل بارز للاعب بعد التسجيل عشان يحفظه
+function _showRecoveryCodeAlert(code, onDone) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(10,8,4,0.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
+  overlay.innerHTML = `
+    <div style="background:linear-gradient(160deg,#1a1407,#0f0b04);border:1.5px solid var(--gold);border-radius:18px;padding:24px;max-width:380px;width:100%;direction:rtl;text-align:center;font-family:'Cairo',sans-serif;box-shadow:0 0 40px rgba(201,151,58,0.3);">
+      <div style="font-size:38px;margin-bottom:8px;">🔑</div>
+      <div style="font-size:18px;font-weight:800;color:var(--gold);margin-bottom:8px;">كود الاسترجاع بتاعك</div>
+      <div style="font-size:12px;color:rgba(245,217,139,0.7);margin-bottom:14px;line-height:1.5;">احفظه في مكان آمن — هتحتاجه لو نسيت كلمة المرور.<br>مفيش طريقة تانية تسترجع حسابك من غيره.</div>
+      <div id="recoveryCodeBox" style="font-family:monospace;font-size:32px;font-weight:900;color:var(--gold);letter-spacing:6px;background:rgba(201,151,58,0.1);border:1.5px dashed var(--gold);border-radius:12px;padding:18px;margin-bottom:14px;user-select:all;">${code}</div>
+      <div style="display:flex;gap:10px;margin-bottom:6px;">
+        <button id="copyRecBtn" style="flex:1;padding:10px;background:rgba(201,151,58,0.15);border:1px solid rgba(201,151,58,0.4);border-radius:10px;color:var(--gold);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">📋 نسخ</button>
+        <button id="closeRecBtn" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;">✅ حفظته</button>
+      </div>
+      <div style="font-size:10px;color:rgba(245,217,139,0.4);">يفضل تصوّره أو تكتبه عندك</div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#copyRecBtn').onclick = () => {
+    navigator.clipboard?.writeText(code).then(() => showToast('✅ تم نسخ الكود'));
+  };
+  overlay.querySelector('#closeRecBtn').onclick = () => {
+    if (!confirm('متأكد إنك حفظت كود الاسترجاع؟ مش هتقدر تشوفه تاني!')) return;
+    overlay.remove();
+    if (typeof onDone === 'function') onDone();
+  };
+}
+
+// ★ بدء عملية استرجاع كلمة المرور (للاعبين اللي نسيوا)
+function startRecovery() {
+  const user = prompt('اكتب اسم المستخدم بتاعك (مش الاسم اللي يظهر):');
+  if (!user) return;
+  const u = user.trim();
+  if (!u) return;
+  const code = prompt('اكتب كود الاسترجاع (٦ حروف) اللي حفظته وقت التسجيل:');
+  if (!code) return;
+  const c = code.trim().toUpperCase();
+  if (c.length !== 6) { alert('الكود لازم ٦ حروف'); return; }
+  // اتحقق من الكود محلياً أولاً، ولو مش موجود من Firebase
+  const _verifyAndReset = (storedRecoveryEnc, isFromFb) => {
+    if (!storedRecoveryEnc || storedRecoveryEnc !== btoa(c)) {
+      alert('❌ كود الاسترجاع غلط — اتأكد إنك كاتب الكود اللي حفظته بالظبط');
+      return;
+    }
+    const newPass = prompt('كلمة المرور الجديدة (٤ حروف على الأقل):');
+    if (!newPass) return;
+    if (newPass.length < 4) { alert('كلمة المرور قصيرة جداً'); return; }
+    const newPass2 = prompt('أكّد كلمة المرور الجديدة:');
+    if (newPass !== newPass2) { alert('كلمتا المرور مش متطابقتين'); return; }
+    // طبّق التغيير: محلياً + Firebase
+    const users = getUsers();
+    if (users[u]) {
+      users[u].password = btoa(newPass);
+      saveUsers(users);
+    }
+    if (typeof window.fbResetPassword === 'function') {
+      window.fbResetPassword(u, newPass,
+        () => { alert('✅ تم تغيير كلمة المرور — ادخل بكلمتك الجديدة'); },
+        () => { alert('⚠️ التغيير المحلي تم، لكن السحابة لسه. جرّب تدخل، ولو فشل قوللي.'); });
+    } else {
+      alert('✅ تم تغيير كلمة المرور محلياً — ادخل بكلمتك الجديدة');
+    }
+  };
+  // اتحقق محلياً
+  const users = getUsers();
+  if (users[u] && users[u].recoveryCode) {
+    _verifyAndReset(users[u].recoveryCode, false);
+    return;
+  }
+  // مفيش محلياً → اجلب من Firebase
+  if (typeof window.fbGetUserData === 'function') {
+    window.fbGetUserData(u, (data) => {
+      if (!data) { alert('❌ مفيش حساب بالاسم ده'); return; }
+      if (!data.recoveryCode) {
+        alert('❌ الحساب ده اتعمل قبل نظام الاسترجاع — لازم تعيد تسجيله أو تواصل معايا');
+        return;
+      }
+      _verifyAndReset(data.recoveryCode, true);
+    });
+  } else {
+    alert('⏳ Firebase لسه بيتحمّل — حاول تاني');
+  }
+}
+window.startRecovery = startRecovery;
+
 function _finishLogin(username, isGuest) {
   document.getElementById('loginScreen').classList.add('hide');
-  document.getElementById('userNameDisplay').textContent = '👤 ' + username;
+  const _disp = _displayName(currentUser || { username });
+  const _el = document.getElementById('userNameDisplay');
+  _el.innerHTML = '👤 ' + _disp + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
   if (typeof window.fbSignInAnon === 'function') window.fbSignInAnon();
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
@@ -3174,7 +3341,36 @@ function _finishLogin(username, isGuest) {
   populateSurahFilter();
   populateJuzFilter();
   loadMemorizedSurahs();
-  showToast('مرحباً ' + username + '! 🌙');
+  showToast('مرحباً ' + _disp + '! 🌙');
+
+  // ★ Migration للحسابات القديمة: لو الحساب مسجّل ومفيهوش كود استرجاع، نولّد له واحد ونعرضه مرة واحدة
+  if (!isGuest && currentUser && !currentUser.recoveryCode) {
+    setTimeout(() => {
+      // اتأكد تاني بعد ما Firebase يجيب البيانات الكاملة
+      if (currentUser && currentUser.recoveryCode) return; // اتولّد من جهاز تاني
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let code = '';
+      for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+      const enc = btoa(code);
+      currentUser.recoveryCode = enc;
+      // احفظ محلياً
+      try {
+        const users = getUsers();
+        if (users[username]) {
+          users[username].recoveryCode = enc;
+          saveUsers(users);
+        }
+      } catch (e) {}
+      // احفظ في Firebase
+      if (typeof window.fbSaveFullUserData === 'function') {
+        window.fbSaveFullUserData(username, { ...currentUser, recoveryCode: enc });
+      }
+      // أعرض الكود للاعب يحفظه
+      _showRecoveryCodeAlert(code, () => {
+        showToast('✅ احتفظ بالكود ده في مكان آمن');
+      });
+    }, 1500); // ندي Firebase وقت يكمّل الـsync الأول
+  }
 
   // ★ sync كامل من Firebase عند الدخول (مسجلين فقط)
   if (!isGuest) {
@@ -3323,7 +3519,32 @@ function updateHomeStats() {
   document.getElementById('totalHasanat').textContent = formatBigNum(currentUser.totalHasanat || 0);
   if (typeof updateGlobalRankChip === 'function') updateGlobalRankChip();
   const _gn = document.getElementById('guestNotice');
-  if (_gn) _gn.style.display = currentUser.isGuest ? 'block' : 'none';
+  if (_gn) {
+    if (currentUser.isGuest) {
+      _gn.style.display = 'block';
+      // ★ ذكاء البانر: لو فيه حساب محفوظ، نوريه ونديله زرار رجوع مباشر
+      try {
+        const lastUser = localStorage.getItem('nour_last_user');
+        if (lastUser) {
+          const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
+          const data  = users[lastUser];
+          const dispName = (data && data.name) ? data.name : lastUser;
+          _gn.onclick = null; // نشيل onclick القديم لأن فيه زرار داخلي دلوقتي
+          _gn.innerHTML =
+            '<div style="font-size:13px;color:#ffb784;font-weight:700;margin-bottom:8px;">🕊️ بتلعب كضيف — مش حساب «' + dispName + '»</div>' +
+            '<button onclick="event.stopPropagation();_switchBackToSaved()" style="background:rgba(255,150,80,0.25);border:1px solid rgba(255,150,80,0.6);color:#ffe0c0;padding:6px 14px;border-radius:9px;font-family:\'Cairo\',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">↩ ارجع لحسابك</button>';
+        } else {
+          // مفيش حساب محفوظ — البانر القديم العادي (يدخل شاشة الدخول)
+          _gn.onclick = doLogout;
+          _gn.innerHTML =
+            '<div style="font-size:12px;color:#ffb784;font-weight:700;">🕊️ أنت تلعب كضيف</div>' +
+            '<div style="font-size:11px;color:rgba(255,200,160,0.75);margin-top:4px;line-height:1.6;">نقاطك محفوظة على الجهاز ده بس ومش بتتوحّد مع باقي أجهزتك.<br><b style="color:#ffd9b8;">اضغط هنا لتسجيل الدخول بحسابك وتوحيد نقاطك 👈</b></div>';
+        }
+      } catch (e) {}
+    } else {
+      _gn.style.display = 'none';
+    }
+  }
 
   // رسالة تحفيزية متغيرة حسب مستوى اللاعب
   const _games = currentUser.totalGames || 0;
@@ -5594,26 +5815,9 @@ function renderMCQ(q) {
 
 // بعد الإجابة: أضف أزرار الصوت على الاختيارات
 function addAudioBtnsAfterAnswer(q) {
-  const wrap = document.getElementById('mcqWrap');
-  const isAyahChoice = q.qtype === 'next' || q.qtype === 'prev' || q.qtype === 'similar' || q.qtype === 'firstword' || q.qtype === 'reverse';
-  wrap.querySelectorAll('.choice-btn').forEach(btn => {
-    if (btn.querySelector('.post-audio-btn')) return;
-    const ch = btn.dataset.ch || btn.textContent.replace('آية ', '').replace(/[٠-٩]/g, d => '0١٢٣٤٥٦٧٨٩'.indexOf(d));
-    const audioBtn = document.createElement('button');
-    audioBtn.className = 'post-audio-btn';
-    audioBtn.textContent = '🔊';
-    audioBtn.title = 'استمع';
-    audioBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      if (isAyahChoice) {
-        playChoiceAyahAudio(btn.dataset.ch || btn.textContent, q.surah, audioBtn);
-      } else {
-        playChoiceAudio(btn.dataset.ch || btn.textContent, audioBtn);
-      }
-    };
-    btn.style.position = 'relative';
-    btn.appendChild(audioBtn);
-  });
+  // ★ معطّلة: مفيش أزرار صوت على الاختيارات (طلب المستخدم).
+  //   الصوت بيفضل بس في زر السؤال نفسه وفي شاشة الغلطات.
+  return;
 }
 
 function showListenChoices() {
@@ -5622,26 +5826,14 @@ function showListenChoices() {
   document.getElementById('listenBtn').style.display = 'none';
   const choices = shuffle([q.blank, ...q.wrong]);
   const wrap = document.getElementById('listenChoices');
+  // ★ شيلنا أزرار الصوت من الاختيارات — اللاعب بيختار من النص بس
   choices.forEach(ch => {
-    const wrapDiv = document.createElement('div');
-    wrapDiv.style.cssText = 'display:flex;align-items:stretch;gap:0;width:100%;';
-
-    const audioBtn = document.createElement('button');
-    audioBtn.className = 'audio-btn-small';
-    audioBtn.style.cssText = 'border-radius:14px 0 0 14px;width:36px;height:auto;align-self:stretch;';
-    audioBtn.textContent = '🔊';
-    audioBtn.title = 'استمع للآية بصوت مشاري راشد';
-    audioBtn.onclick = (ev) => { ev.stopPropagation(); playChoiceAudio(ch, audioBtn); };
-
     const btn = document.createElement('button');
     btn.className = 'choice-btn';
-    btn.style.cssText = 'flex:1;border-radius:0 14px 14px 0;';
+    btn.style.cssText = 'width:100%;';
     btn.textContent = ch;
     btn.onclick = (e) => checkAnswer(ch, q.blank, e);
-
-    wrapDiv.appendChild(audioBtn);
-    wrapDiv.appendChild(btn);
-    wrap.appendChild(wrapDiv);
+    wrap.appendChild(btn);
   });
 }
 
@@ -7495,7 +7687,7 @@ function multiCreateRoom() {
   // خطوة ١: أُظهر الواجهة فوراً
   multiState.roomCode = code;
   multiState.isHost = true;
-  multiState.playerName = currentUser.username;
+  multiState.playerName = _displayName(currentUser); // ★ الاسم للعرض (مش username)
   multiState.playerKey = playerKey;
   multiState.surahFilter = surahVal;
   multiState.phase = 'waiting';
@@ -7507,7 +7699,7 @@ function multiCreateRoom() {
   const initRoom = {
     code, hostUser: currentUser.username, phase: 'waiting',
     surahFilter: surahVal, totalQ: 0, questions: [], maxPlayers, qTime, level: mLevel,
-    players: { [playerKey]: { name: currentUser.username, score: 0, answered: false, ready: true, lastSeen: Date.now() } },
+    players: { [playerKey]: { name: _displayName(currentUser), score: 0, answered: false, ready: true, lastSeen: Date.now() } },
     currentQ: 0, createdAt: Date.now(),
   };
   window._multiRoomCache = initRoom;
@@ -7602,12 +7794,12 @@ function multiJoinRoom() {
   const playerKey = typeof window._makeKey === 'function'
     ? window._makeKey(currentUser.username, false)
     : currentUser.username;
-  const playerData = { name: currentUser.username, score: 0, answered: false, ready: true, lastSeen: Date.now() };
+  const playerData = { name: _displayName(currentUser), score: 0, answered: false, ready: true, lastSeen: Date.now() };
 
   // ★★ استجابة لحظية: ادخل قاعة الانتظار فورًا بمجرد الضغط — التحقق والتسجيل في الخلفية ★★
   multiState.roomCode = code;
   multiState.isHost = false;
-  multiState.playerName = currentUser.username;
+  multiState.playerName = _displayName(currentUser); // ★ الاسم للعرض (مش username)
   multiState.playerKey = playerKey;
   multiState.phase = 'waiting';
   window._multiRoomCache = null;
