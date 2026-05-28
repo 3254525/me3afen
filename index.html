@@ -1781,6 +1781,24 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       return remove(ref(db, ROOMS_PATH + roomCode));
     },
 
+    // ★ نقاط نهائية في مسار مستقل تمامًا: nour_room_results/<code>/<pk>
+    //   ده بيتكتب مرة واحدة لما اللعبة تخلص، ومحدش بيكتب عليه ومحدش بيمسحه.
+    //   ضمانة مطلقة إن النقاط بتظهر صح للكل آخر الغرفة.
+    saveFinalScore: function(roomCode, playerKey, score, playerName) {
+      const path = 'nour_room_results/' + roomCode + '/' + playerKey;
+      return set(ref(db, path), {
+        name: playerName || 'لاعب',
+        score: score || 0,
+        ts: Date.now(),
+      });
+    },
+
+    getFinalScores: function(roomCode, callback) {
+      get(ref(db, 'nour_room_results/' + roomCode)).then((snap) => {
+        callback(snap.exists() ? snap.val() : null);
+      }).catch(() => callback(null));
+    },
+
     // مسح الغرفة تلقائياً بعد انتهاء اللعبة بـ delay (عشان اللاعبين يشوفوا النتيجة)
     scheduleRoomCleanup: function(roomCode, delayMs) {
       const delay = delayMs || 30000; // 30 ثانية افتراضي
@@ -8350,16 +8368,31 @@ function _showMultiResults() {
   multiState.phase = 'results';
 
   const pk = multiState.playerKey || multiState.playerName;
+  const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
   if (typeof window.fbMulti !== 'undefined') {
-    // ★ كتابة نهائية مضمونة: ٣ محاولات + كتابة احتياطية بعد ٢ ثانية
-    //   كمان نكتب في حقل مستقل finalScore + finalName عشان لو في حاجة مسحت score العادية
-    //   الـfinalScore يفضل موجود ومحدش يكتب عليه (write-once بطبيعته)
+    // ★★ الحل الجذري: نكتب النقطة النهائية في مسار مستقل تمامًا nour_room_results/<code>/<pk>
+    //    محدش بيكتب على المسار ده ومحدش بيمسحه. ضمانة مطلقة إن النقاط بتظهر صح.
+    if (typeof window.fbMulti.saveFinalScore === 'function') {
+      const _saveDedicated = (attempt) => {
+        const p = window.fbMulti.saveFinalScore(multiState.roomCode, pk, multiState.myScore || 0, _myFinalName);
+        if (p && p.catch) {
+          p.catch(() => {
+            if (attempt < 4) setTimeout(() => _saveDedicated(attempt + 1), 400 * attempt);
+          });
+        }
+      };
+      _saveDedicated(1);
+      setTimeout(() => _saveDedicated(1), 1500);
+      setTimeout(() => _saveDedicated(1), 4000);
+    }
+
+    // ★ كمان نكتب في room.players كـbackup (الطريقة القديمة)
     const _finalScore = {
       score: multiState.myScore,
       done: true,
       lastSeen: Date.now(),
       finalScore: multiState.myScore,
-      finalName: multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب',
+      finalName: _myFinalName,
     };
     const _writeFinal = (attempt) => {
       const p = window.fbMulti.updatePlayer(multiState.roomCode, pk, _finalScore);
@@ -8370,8 +8403,8 @@ function _showMultiResults() {
       }
     };
     _writeFinal(1);
-    setTimeout(() => _writeFinal(1), 2000); // كتابة احتياطية تانية بعد ثانيتين
-    setTimeout(() => _writeFinal(1), 5000); // وكمان واحدة بعد ٥ ثواني
+    setTimeout(() => _writeFinal(1), 2000);
+    setTimeout(() => _writeFinal(1), 5000);
     // ★ المضيف يعلّم الغرفة "انتهت" — عشان أي لاعب يرجع لقاعة الانتظار ما يترجعش للعبة القديمة
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
@@ -8457,37 +8490,58 @@ function _showMultiResults() {
   //    (ده بيحل مشكلة التضارب لو كتابة لاعب على Firebase وصلت متأخرة)
   if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
     const _refreshResults = (attempt) => {
-      window.fbMulti.getRoom(multiState.roomCode, (freshRoom) => {
-        if (!freshRoom || !freshRoom.players) return;
-        window._multiRoomCache = freshRoom;
-        const freshPlayers = { ...(freshRoom.players || {}) };
-        // override لنقطة اللاعب نفسه
-        if (pk) {
-          const _prev = freshPlayers[pk] || {};
-          freshPlayers[pk] = {
-            ..._prev,
-            name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
-            finalScore: Math.max(_bestScore(_prev), multiState.myScore || 0),
-            score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
-          };
-        }
-        const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _bestScore(b[1]) - _bestScore(a[1]));
-        const freshWinner = freshSorted[0];
-        const freshIsWinner = freshWinner && freshWinner[0] === pk;
-        const winnerEl = document.getElementById('multiWinnerName');
-        const trophyEl = document.getElementById('multiTrophyEmoji');
-        const msgEl    = document.getElementById('multiWinnerMsg');
-        if (trophyEl) trophyEl.textContent = freshIsWinner ? '🏆' : '🎉';
-        if (winnerEl) winnerEl.textContent = freshWinner ? _bestName(freshWinner[1]) : '';
-        if (msgEl) msgEl.textContent = freshIsWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
-        const scoresEl = document.getElementById('multiFinalScores');
-        if (scoresEl) scoresEl.innerHTML = freshSorted.map(([u, p], i) =>
-          `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
-            <span style="font-size:22px;">${medals[i]||'👤'}</span>
-            <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
-            <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_bestScore(p))}</span>
-          </div>`
-        ).join('');
+      // ★★ نقرأ من المسار المخصّص للنتايج النهائية أولاً (الأقوى والأضمن)
+      const _readFinals = (cb) => {
+        if (typeof window.fbMulti.getFinalScores === 'function') {
+          window.fbMulti.getFinalScores(multiState.roomCode, cb);
+        } else cb(null);
+      };
+      _readFinals((finalScores) => {
+        window.fbMulti.getRoom(multiState.roomCode, (freshRoom) => {
+          // ★ ندمج المصدرين: نقاط نهائية مستقلة (الأولوية) + بيانات اللاعبين العادية
+          const freshPlayers = (freshRoom && freshRoom.players) ? { ...freshRoom.players } : {};
+          // ندمج بيانات النقاط النهائية (المسار المستقل) فوق أي حاجة
+          if (finalScores) {
+            Object.entries(finalScores).forEach(([fpk, fdata]) => {
+              if (!fdata) return;
+              freshPlayers[fpk] = {
+                ...(freshPlayers[fpk] || {}),
+                name: (freshPlayers[fpk] && freshPlayers[fpk].name) || fdata.name || 'لاعب',
+                finalName: fdata.name,
+                finalScore: fdata.score || 0,
+                score: Math.max((freshPlayers[fpk] && freshPlayers[fpk].score) || 0, fdata.score || 0),
+              };
+            });
+          }
+          if (freshRoom) window._multiRoomCache = freshRoom;
+          // override لنقطة اللاعب نفسه — مضمونة من المصدر المحلي
+          if (pk) {
+            const _prev = freshPlayers[pk] || {};
+            freshPlayers[pk] = {
+              ..._prev,
+              name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
+              finalScore: Math.max(_bestScore(_prev), multiState.myScore || 0),
+              score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
+            };
+          }
+          const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _bestScore(b[1]) - _bestScore(a[1]));
+          const freshWinner = freshSorted[0];
+          const freshIsWinner = freshWinner && freshWinner[0] === pk;
+          const winnerEl = document.getElementById('multiWinnerName');
+          const trophyEl = document.getElementById('multiTrophyEmoji');
+          const msgEl    = document.getElementById('multiWinnerMsg');
+          if (trophyEl) trophyEl.textContent = freshIsWinner ? '🏆' : '🎉';
+          if (winnerEl) winnerEl.textContent = freshWinner ? _bestName(freshWinner[1]) : '';
+          if (msgEl) msgEl.textContent = freshIsWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
+          const scoresEl = document.getElementById('multiFinalScores');
+          if (scoresEl) scoresEl.innerHTML = freshSorted.map(([u, p], i) =>
+            `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
+              <span style="font-size:22px;">${medals[i]||'👤'}</span>
+              <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
+              <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_bestScore(p))}</span>
+            </div>`
+          ).join('');
+        });
       });
     };
     // إعادة عرض ٣ مرات: ١ثانية، ٣ثواني، ٦ثواني — عشان نلاقي كل اللاعيبة رفعوا finalScore
