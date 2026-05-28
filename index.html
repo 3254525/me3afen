@@ -2238,6 +2238,22 @@ function _callWhenReady(fn, args) {
         <span class="login-field-icon">✅</span>
         <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور...">
       </div>
+      <div class="login-field">
+        <label>سؤال الأمان (لو نسيت كلمة المرور)</label>
+        <span class="login-field-icon">🛡️</span>
+        <select id="regSecQ" style="width:100%;padding:14px 38px 14px 14px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:12px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
+          <option value="mother">ما اسم والدتك؟</option>
+          <option value="school">ما اسم أول مدرسة درست فيها؟</option>
+          <option value="city">ما اسم المدينة اللي اتولدت فيها؟</option>
+          <option value="color">ما لونك المفضّل؟</option>
+          <option value="pet">ما اسم حيوان أليف ربيته؟</option>
+        </select>
+      </div>
+      <div class="login-field">
+        <label>إجابة سؤال الأمان</label>
+        <span class="login-field-icon">💡</span>
+        <input type="text" id="regSecA" placeholder="اكتب إجابتك (افتكرها كويس!)">
+      </div>
       <button type="submit" class="login-btn">إنشاء الحساب 🌟</button>
     </form>
 
@@ -3083,6 +3099,8 @@ function doRegister() {
   const user = document.getElementById('regUser').value.trim();
   const pass = document.getElementById('regPass').value;
   const pass2 = document.getElementById('regPass2').value;
+  const secQ = document.getElementById('regSecQ').value;
+  const secA = document.getElementById('regSecA').value.trim();
   if (!name || !user || !pass) { showLoginErr('أدخل جميع البيانات (الاسم، اسم المستخدم، كلمة المرور)'); return; }
   if (name.length < 2) { showLoginErr('الاسم يجب أن يكون حرفين على الأقل'); return; }
   if (name.length > 30) { showLoginErr('الاسم طويل جداً (٣٠ حرف كحد أقصى)'); return; }
@@ -3093,6 +3111,7 @@ function doRegister() {
   }
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
+  if (!secA || secA.length < 2) { showLoginErr('اكتب إجابة سؤال الأمان (حرفين على الأقل) — هتحتاجها لو نسيت كلمة المرور'); return; }
 
   // ★ مهم: نمسح أي session قديمة عشان loginSuccess ما تتعطّلش
   currentUser = null;
@@ -3104,14 +3123,9 @@ function doRegister() {
   const _onReg = () => {
     const defaultData = createDefaultUserData();
     defaultData.name = name; // ★ الاسم للعرض (يظهر للناس بدل username)
-    // ★ كود استرجاع: لو نسي كلمة المرور يستخدمه لإعادة الضبط
-    const recoveryCode = (() => {
-      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // بدون 0/O/I/1 للوضوح
-      let c = '';
-      for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
-      return c;
-    })();
-    defaultData.recoveryCode = btoa(recoveryCode); // مخزّن مشفّر زي الباسورد
+    // ★ سؤال الأمان + الإجابة (الإجابة طبيعتها lowercase+trim للمقارنة، ومخزّنة مشفّرة)
+    defaultData.secQ = secQ;
+    defaultData.secA = btoa(unescape(encodeURIComponent(secA.toLowerCase())));
     // ★ لو فيه نقاط محلية للاسم ده (من قبل التوحيد) — احتفظ بيها بدل ما نبدأ من صفر
     try {
       const _lu = (getUsers() || {})[user] || {};
@@ -3128,8 +3142,7 @@ function doRegister() {
     }
     if (typeof window._markAuthDone === 'function') window._markAuthDone();
     window._registering = false;
-    // ★ أظهر كود الاسترجاع بشكل بارز قبل ما يدخل
-    _showRecoveryCodeAlert(recoveryCode, () => loginSuccess(user, defaultData));
+    loginSuccess(user, defaultData);
   };
   const _onErr = (errMsg) => { window._registering = false; showLoginErr(errMsg); };
 
@@ -3207,53 +3220,19 @@ function loginSuccess(username, data, isGuest=false) {
 }
 window.loginSuccess = loginSuccess;
 
-// ★ السماح للاعب بتغيير اسمه للعرض (للحسابات القديمة + لو حد عايز يغيّر اسمه)
-// ★ عرض كود الاسترجاع للاعب وقت ما يحب (مش popup تلقائي)
-function viewRecoveryCode() {
-  if (!currentUser || currentUser.isGuest) {
-    showToast('🕊️ كود الاسترجاع للحسابات المسجّلة فقط');
-    return;
-  }
-  // لو الحساب القديم لسه مفيهوش كود، نولّده دلوقتي
-  if (!currentUser.recoveryCode) {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-    currentUser.recoveryCode = btoa(code);
-    try {
-      const users = getUsers();
-      if (users[currentUser.username]) {
-        users[currentUser.username].recoveryCode = currentUser.recoveryCode;
-        saveUsers(users);
-      }
-    } catch (e) {}
-    if (typeof window.fbSaveFullUserData === 'function') {
-      window.fbSaveFullUserData(currentUser.username, { ...currentUser });
-    }
-    _showRecoveryCodeAlert(code, () => {});
-    return;
-  }
-  // الكود موجود — فك التشفير واعرضه
-  let code;
-  try { code = atob(currentUser.recoveryCode); }
-  catch (e) { showToast('⚠️ مشكلة في قراءة الكود — جرّب تخرج وتدخل تاني'); return; }
-  _showRecoveryCodeAlert(code, () => {});
-}
-window.viewRecoveryCode = viewRecoveryCode;
-
+// ★ السماح للاعب بتغيير اسمه للعرض
 function editDisplayName() {
   if (!currentUser) return;
   if (currentUser.isGuest) { showToast('🕊️ الضيوف ما يقدروش يغيّروا الاسم — سجّل حساب أولاً'); return; }
   const cur = currentUser.name || currentUser.username || '';
   const ne = prompt('اكتب الاسم اللي تحبّ يظهر للناس (مش اسم المستخدم):', cur);
-  if (ne === null) return; // ألغى
+  if (ne === null) return;
   const n = ne.trim();
   if (!n) { showToast('⚠️ الاسم مش ممكن يكون فاضي'); return; }
   if (n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
   currentUser.name = n;
   window.currentUser = currentUser;
   saveCurrentUser();
-  // حدّث Firebase (اللوحة + البيانات الكاملة)
   if (typeof window.fbSaveUser === 'function') {
     window.fbSaveUser(currentUser.username, {
       totalHasanat: currentUser.totalHasanat || 0,
@@ -3266,97 +3245,151 @@ function editDisplayName() {
   if (typeof window.fbSaveFullUserData === 'function') {
     window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n });
   }
-  // حدّث العرض على الشاشة
   const el = document.getElementById('userNameDisplay');
-  if (el) el.innerHTML = '👤 ' + n +
-    ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);margin-right:4px;" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>' +
-    '<span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();viewRecoveryCode()" title="شوف كود الاسترجاع بتاعك">🔑</span>';
+  if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
   showToast('✅ تم تغيير اسمك إلى: ' + n);
   if (typeof renderLeaderboard === 'function') renderLeaderboard();
 }
 window.editDisplayName = editDisplayName;
 
-// ★ يعرض كود الاسترجاع بشكل بارز للاعب بعد التسجيل عشان يحفظه
-function _showRecoveryCodeAlert(code, onDone) {
+// ★ استرجاع الحساب — سؤال الأمان (فوري، من غير ما يستنّى حد)
+const _SEC_QUESTIONS = {
+  mother: 'ما اسم والدتك؟',
+  school: 'ما اسم أول مدرسة درست فيها؟',
+  city:   'ما اسم المدينة اللي اتولدت فيها؟',
+  color:  'ما لونك المفضّل؟',
+  pet:    'ما اسم حيوان أليف ربيته؟',
+};
+
+function startRecovery() {
+  const ex = document.getElementById('_recoveryModal'); if (ex) ex.remove();
+  let suggestedUser = '';
+  try { suggestedUser = localStorage.getItem('nour_last_user') || ''; } catch (e) {}
+
   const overlay = document.createElement('div');
+  overlay.id = '_recoveryModal';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(10,8,4,0.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
   overlay.innerHTML = `
-    <div style="background:linear-gradient(160deg,#1a1407,#0f0b04);border:1.5px solid var(--gold);border-radius:18px;padding:24px;max-width:380px;width:100%;direction:rtl;text-align:center;font-family:'Cairo',sans-serif;box-shadow:0 0 40px rgba(201,151,58,0.3);">
-      <div style="font-size:38px;margin-bottom:8px;">🔑</div>
-      <div style="font-size:18px;font-weight:800;color:var(--gold);margin-bottom:8px;">كود الاسترجاع بتاعك</div>
-      <div style="font-size:12px;color:rgba(245,217,139,0.7);margin-bottom:14px;line-height:1.5;">احفظه في مكان آمن — هتحتاجه لو نسيت كلمة المرور.<br>مفيش طريقة تانية تسترجع حسابك من غيره.</div>
-      <div id="recoveryCodeBox" style="font-family:monospace;font-size:32px;font-weight:900;color:var(--gold);letter-spacing:6px;background:rgba(201,151,58,0.1);border:1.5px dashed var(--gold);border-radius:12px;padding:18px;margin-bottom:14px;user-select:all;">${code}</div>
-      <div style="display:flex;gap:10px;margin-bottom:6px;">
-        <button id="copyRecBtn" style="flex:1;padding:10px;background:rgba(201,151,58,0.15);border:1px solid rgba(201,151,58,0.4);border-radius:10px;color:var(--gold);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">📋 نسخ</button>
-        <button id="closeRecBtn" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;">✅ حفظته</button>
-      </div>
-      <div style="font-size:10px;color:rgba(245,217,139,0.4);">يفضل تصوّره أو تكتبه عندك</div>
+    <div style="background:linear-gradient(160deg,#1a1407,#0f0b04);border:1.5px solid var(--gold);border-radius:18px;padding:24px;max-width:380px;width:100%;direction:rtl;font-family:'Cairo',sans-serif;box-shadow:0 0 40px rgba(201,151,58,0.25);">
+      <div id="_recBody"></div>
     </div>`;
   document.body.appendChild(overlay);
-  overlay.querySelector('#copyRecBtn').onclick = () => {
-    navigator.clipboard?.writeText(code).then(() => showToast('✅ تم نسخ الكود'));
-  };
-  overlay.querySelector('#closeRecBtn').onclick = () => {
-    if (!confirm('متأكد إنك حفظت كود الاسترجاع؟ مش هتقدر تشوفه تاني!')) return;
-    overlay.remove();
-    if (typeof onDone === 'function') onDone();
-  };
-}
 
-// ★ بدء عملية استرجاع كلمة المرور (للاعبين اللي نسيوا)
-function startRecovery() {
-  const user = prompt('اكتب اسم المستخدم بتاعك (مش الاسم اللي يظهر):');
-  if (!user) return;
-  const u = user.trim();
-  if (!u) return;
-  const code = prompt('اكتب كود الاسترجاع (٦ حروف) اللي حفظته وقت التسجيل:');
-  if (!code) return;
-  const c = code.trim().toUpperCase();
-  if (c.length !== 6) { alert('الكود لازم ٦ حروف'); return; }
-  // اتحقق من الكود محلياً أولاً، ولو مش موجود من Firebase
-  const _verifyAndReset = (storedRecoveryEnc, isFromFb) => {
-    if (!storedRecoveryEnc || storedRecoveryEnc !== btoa(c)) {
-      alert('❌ كود الاسترجاع غلط — اتأكد إنك كاتب الكود اللي حفظته بالظبط');
-      return;
-    }
-    const newPass = prompt('كلمة المرور الجديدة (٤ حروف على الأقل):');
-    if (!newPass) return;
-    if (newPass.length < 4) { alert('كلمة المرور قصيرة جداً'); return; }
-    const newPass2 = prompt('أكّد كلمة المرور الجديدة:');
-    if (newPass !== newPass2) { alert('كلمتا المرور مش متطابقتين'); return; }
-    // طبّق التغيير: محلياً + Firebase
-    const users = getUsers();
-    if (users[u]) {
-      users[u].password = btoa(newPass);
-      saveUsers(users);
-    }
-    if (typeof window.fbResetPassword === 'function') {
-      window.fbResetPassword(u, newPass,
-        () => { alert('✅ تم تغيير كلمة المرور — ادخل بكلمتك الجديدة'); },
-        () => { alert('⚠️ التغيير المحلي تم، لكن السحابة لسه. جرّب تدخل، ولو فشل قوللي.'); });
-    } else {
-      alert('✅ تم تغيير كلمة المرور محلياً — ادخل بكلمتك الجديدة');
-    }
-  };
-  // اتحقق محلياً
-  const users = getUsers();
-  if (users[u] && users[u].recoveryCode) {
-    _verifyAndReset(users[u].recoveryCode, false);
-    return;
-  }
-  // مفيش محلياً → اجلب من Firebase
-  if (typeof window.fbGetUserData === 'function') {
-    window.fbGetUserData(u, (data) => {
-      if (!data) { alert('❌ مفيش حساب بالاسم ده'); return; }
-      if (!data.recoveryCode) {
-        alert('❌ الحساب ده اتعمل قبل نظام الاسترجاع — لازم تعيد تسجيله أو تواصل معايا');
-        return;
+  // ── الخطوة ١: اسم المستخدم ──
+  const step1 = () => {
+    overlay.querySelector('#_recBody').innerHTML = `
+      <div style="text-align:center;">
+        <div style="font-size:34px;margin-bottom:6px;">🔑</div>
+        <div style="font-size:17px;font-weight:800;color:var(--gold);margin-bottom:14px;">نسيت كلمة المرور</div>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">اسم المستخدم بتاعك</label>
+        <input id="_recUser" type="text" value="${suggestedUser}" placeholder="اكتب اسم المستخدم" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
+      </div>
+      <div id="_recErr" style="font-size:12px;color:#FF9E9E;text-align:center;min-height:18px;margin-bottom:8px;"></div>
+      <div style="display:flex;gap:10px;">
+        <button id="_recCancel" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">إلغاء</button>
+        <button id="_recNext" style="flex:2;padding:11px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">التالي ←</button>
+      </div>`;
+    overlay.querySelector('#_recCancel').onclick = () => overlay.remove();
+    overlay.querySelector('#_recNext').onclick = () => {
+      const u = overlay.querySelector('#_recUser').value.trim();
+      if (!u) { overlay.querySelector('#_recErr').textContent = 'اكتب اسم المستخدم'; return; }
+      // جيب بيانات اللاعب (محلي أو Firebase)
+      const _proceed = (data) => {
+        if (!data) { overlay.querySelector('#_recErr').textContent = '❌ مفيش حساب بالاسم ده'; return; }
+        if (!data.secQ || !data.secA) {
+          // حساب قديم بدون سؤال أمان — fallback لواتساب
+          overlay.querySelector('#_recBody').innerHTML = `
+            <div style="text-align:center;">
+              <div style="font-size:34px;margin-bottom:6px;">💬</div>
+              <div style="font-size:16px;font-weight:800;color:var(--gold);margin-bottom:10px;">حساب قديم</div>
+              <div style="font-size:13px;color:rgba(245,217,139,0.7);margin-bottom:16px;line-height:1.7;">الحساب ده اتعمل قبل نظام سؤال الأمان. تواصل معانا على واتساب وهنساعدك.</div>
+              <div style="display:flex;gap:10px;">
+                <button id="_recBack" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">إلغاء</button>
+                <button id="_recWA" style="flex:2;padding:11px;background:#25D366;border:none;border-radius:10px;color:#fff;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">💬 افتح واتساب</button>
+              </div>
+            </div>`;
+          overlay.querySelector('#_recBack').onclick = () => overlay.remove();
+          overlay.querySelector('#_recWA').onclick = () => {
+            const msg = 'السلام عليكم 🌙\n\nنسيت كلمة المرور بتاعت حسابي في تطبيق نور.\nاسم المستخدم: ' + u + '\n\nممكن مساعدتي؟\nشكرًا 🤍';
+            window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
+            overlay.remove();
+          };
+          return;
+        }
+        step2(u, data.secQ, data.secA);
+      };
+      const users = getUsers();
+      if (users[u] && users[u].secQ) { _proceed(users[u]); return; }
+      if (typeof window.fbGetUserData === 'function') {
+        overlay.querySelector('#_recErr').textContent = '⏳ جاري التحقق...';
+        window.fbGetUserData(u, (data) => _proceed(data || users[u]));
+      } else {
+        _proceed(users[u]);
       }
-      _verifyAndReset(data.recoveryCode, true);
-    });
-  } else {
-    alert('⏳ Firebase لسه بيتحمّل — حاول تاني');
-  }
+    };
+    setTimeout(() => overlay.querySelector(suggestedUser ? '#_recNext' : '#_recUser').focus(), 100);
+  };
+
+  // ── الخطوة ٢: السؤال + الإجابة + كلمة المرور الجديدة ──
+  const step2 = (u, secQ, secAEnc) => {
+    const question = _SEC_QUESTIONS[secQ] || 'إيه الإجابة اللي حطيتها وقت التسجيل؟';
+    overlay.querySelector('#_recBody').innerHTML = `
+      <div style="text-align:center;">
+        <div style="font-size:30px;margin-bottom:6px;">🛡️</div>
+        <div style="font-size:16px;font-weight:800;color:var(--gold);margin-bottom:4px;">سؤال الأمان</div>
+        <div style="font-size:11px;color:rgba(245,217,139,0.55);margin-bottom:14px;">اللاعب: <b style="color:var(--gold);">${u}</b></div>
+      </div>
+      <div style="background:rgba(201,151,58,0.08);border:1px solid rgba(201,151,58,0.25);border-radius:10px;padding:12px;margin-bottom:12px;text-align:center;">
+        <div style="font-size:14px;color:var(--cream);font-weight:700;">${question}</div>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">إجابتك</label>
+        <input id="_recAns" type="text" placeholder="نفس اللي كتبته وقت التسجيل" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;color:rgba(245,217,139,0.7);display:block;margin-bottom:4px;">كلمة المرور الجديدة</label>
+        <input id="_recPass" type="password" placeholder="٤ حروف على الأقل" style="width:100%;padding:12px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.3);border-radius:10px;color:var(--cream);font-family:'Cairo',sans-serif;font-size:14px;direction:rtl;box-sizing:border-box;">
+      </div>
+      <div id="_recErr" style="font-size:12px;color:#FF9E9E;text-align:center;min-height:18px;margin-bottom:8px;"></div>
+      <div style="display:flex;gap:10px;">
+        <button id="_recBack" style="flex:1;padding:11px;background:rgba(255,254,249,0.04);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.7);font-family:'Cairo',sans-serif;font-size:13px;cursor:pointer;">رجوع</button>
+        <button id="_recSubmit" style="flex:2;padding:11px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">🔑 تغيير كلمة المرور</button>
+      </div>`;
+    overlay.querySelector('#_recBack').onclick = () => step1();
+    overlay.querySelector('#_recSubmit').onclick = () => {
+      const ans = overlay.querySelector('#_recAns').value.trim().toLowerCase();
+      const np  = overlay.querySelector('#_recPass').value;
+      if (!ans) { overlay.querySelector('#_recErr').textContent = 'اكتب إجابتك'; return; }
+      if (np.length < 4) { overlay.querySelector('#_recErr').textContent = 'كلمة المرور قصيرة (٤ حروف على الأقل)'; return; }
+      // قارن الإجابة المخزّنة (مشفّرة) بالإجابة الجديدة
+      let expectedAns;
+      try { expectedAns = decodeURIComponent(escape(atob(secAEnc))); }
+      catch (e) { overlay.querySelector('#_recErr').textContent = 'مشكلة في بيانات الحساب'; return; }
+      if (ans !== expectedAns) { overlay.querySelector('#_recErr').textContent = '❌ الإجابة غلط'; return; }
+      // طبّق التغيير محلياً
+      try {
+        const users = getUsers();
+        if (users[u]) { users[u].password = btoa(np); saveUsers(users); }
+      } catch (e) {}
+      if (typeof window.fbResetPassword === 'function') {
+        window.fbResetPassword(u, np, () => {}, () => {});
+      }
+      // شاشة نجاح
+      overlay.querySelector('#_recBody').innerHTML = `
+        <div style="text-align:center;padding:10px 0;">
+          <div style="font-size:46px;margin-bottom:8px;">✅</div>
+          <div style="font-size:18px;font-weight:800;color:#7DFFC9;margin-bottom:8px;">اتغيّرت كلمة المرور</div>
+          <div style="font-size:12px;color:rgba(245,217,139,0.7);margin-bottom:18px;">ادخل دلوقتي بكلمة المرور الجديدة</div>
+          <button id="_recDone" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--gold),#E8B84B);border:none;border-radius:10px;color:var(--ink);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">تمام</button>
+        </div>`;
+      overlay.querySelector('#_recDone').onclick = () => overlay.remove();
+    };
+    setTimeout(() => overlay.querySelector('#_recAns').focus(), 100);
+  };
+
+  step1();
 }
 window.startRecovery = startRecovery;
 
@@ -3364,9 +3397,7 @@ function _finishLogin(username, isGuest) {
   document.getElementById('loginScreen').classList.add('hide');
   const _disp = _displayName(currentUser || { username });
   const _el = document.getElementById('userNameDisplay');
-  _el.innerHTML = '👤 ' + _disp +
-    ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);margin-right:4px;" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>' +
-    (isGuest ? '' : '<span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();viewRecoveryCode()" title="شوف كود الاسترجاع بتاعك">🔑</span>');
+  _el.innerHTML = '👤 ' + _disp + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
   if (typeof window.fbSignInAnon === 'function') window.fbSignInAnon();
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
@@ -3380,29 +3411,6 @@ function _finishLogin(username, isGuest) {
   loadMemorizedSurahs();
   showToast('مرحباً ' + _disp + '! 🌙');
 
-  // ★ Migration للحسابات القديمة: لو الحساب مسجّل ومفيهوش كود استرجاع، نولّد له واحد بصمت
-  //   (مفيش popup كل مرة — اللاعب يقدر يشوف الكود بعدها بزر 🔑 جنب اسمه)
-  if (!isGuest && currentUser && !currentUser.recoveryCode) {
-    setTimeout(() => {
-      if (currentUser && currentUser.recoveryCode) return; // اتولّد من جهاز تاني
-      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-      let code = '';
-      for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-      const enc = btoa(code);
-      currentUser.recoveryCode = enc;
-      try {
-        const users = getUsers();
-        if (users[username]) {
-          users[username].recoveryCode = enc;
-          saveUsers(users);
-        }
-      } catch (e) {}
-      if (typeof window.fbSaveFullUserData === 'function') {
-        window.fbSaveFullUserData(username, { ...currentUser, recoveryCode: enc });
-      }
-      // مفيش popup — اللاعب يشوف الكود وقت ما يحب من زر 🔑
-    }, 1500);
-  }
 
   // ★ sync كامل من Firebase عند الدخول (مسجلين فقط)
   if (!isGuest) {
@@ -8249,9 +8257,18 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
   // Sync score to Firebase + تحديث الـ cache فوراً
   const pk = multiState.playerKey || multiState.playerName;
   if (typeof window.fbMulti !== 'undefined') {
-    window.fbMulti.updatePlayer(multiState.roomCode, pk, {
-      score: multiState.myScore, answered: true, lastSeen: Date.now()
-    });
+    // ★ كتابة بإعادة محاولة: لو فشلت لأي سبب (شبكة/auth)، يحاول 3 مرات بـbackoff
+    //   ده بيضمن إن نقطة كل لاعب توصل لFirebase حتى لو حصل خلل لحظي
+    const _scoreData = { score: multiState.myScore, answered: true, lastSeen: Date.now() };
+    const _doWrite = (attempt) => {
+      const p = window.fbMulti.updatePlayer(multiState.roomCode, pk, _scoreData);
+      if (p && p.catch) {
+        p.catch(() => {
+          if (attempt < 3) setTimeout(() => _doWrite(attempt + 1), 400 * attempt);
+        });
+      }
+    };
+    _doWrite(1);
     // تحديث الـ cache فوراً عشان live scores تتغير على طول
     if (!window._multiRoomCache) window._multiRoomCache = { players: {} };
     if (!window._multiRoomCache.players) window._multiRoomCache.players = {};
@@ -8352,7 +8369,19 @@ function _showMultiResults() {
 
   const pk = multiState.playerKey || multiState.playerName;
   if (typeof window.fbMulti !== 'undefined') {
-    window.fbMulti.updatePlayer(multiState.roomCode, pk, { score: multiState.myScore, done: true });
+    // ★ كتابة نهائية مضمونة: ٣ محاولات + كتابة احتياطية بعد ٢ ثانية تاني
+    //   عشان نضمن إن نقطة اللاعب وصلت لFirebase مهما كان
+    const _finalScore = { score: multiState.myScore, done: true, lastSeen: Date.now() };
+    const _writeFinal = (attempt) => {
+      const p = window.fbMulti.updatePlayer(multiState.roomCode, pk, _finalScore);
+      if (p && p.catch) {
+        p.catch(() => {
+          if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt);
+        });
+      }
+    };
+    _writeFinal(1);
+    setTimeout(() => _writeFinal(1), 2000); // كتابة احتياطية تانية بعد ثانيتين
     // ★ المضيف يعلّم الغرفة "انتهت" — عشان أي لاعب يرجع لقاعة الانتظار ما يترجعش للعبة القديمة
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
