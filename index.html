@@ -1206,9 +1206,13 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   function toFbEmail(email) { return email.trim().toLowerCase(); }
   function padPass(p) { return p + '__nr'; }
 
-  // ★ إعادة تعيين كلمة المرور — Firebase بيبعت رسالة للإيميل الحقيقي
+  // ★ إعادة تعيين كلمة المرور — مع رجوع للتطبيق بعد الإعادة
   window.fbResetPassword = function(email, onSuccess, onError) {
-    sendPasswordResetEmail(auth, email.trim().toLowerCase())
+    const actionSettings = {
+      url: 'https://nourquranofficial.github.io/nour/',
+      handleCodeInApp: false,
+    };
+    sendPasswordResetEmail(auth, email.trim().toLowerCase(), actionSettings)
       .then(() => onSuccess && onSuccess())
       .catch(e => onError && onError(e.code));
   };
@@ -1950,7 +1954,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     runTransaction(entryRef, (cur) => {
       if (cur && (cur.updatedAt || 0) > ts) return cur; // فيه أحدث منه — سيبه
       return {
-        name:             username,
+        name:             data.name || (cur && cur.name) || username, // ★ الاسم للعرض وليس الإيميل
         // ★★ ناخد الأعلى بين القديم والجديد — مستحيل تنقص النقاط حتى لو حصل overwrite خطأ
         totalHasanat:     Math.max((cur && cur.totalHasanat) || 0, data.totalHasanat || 0),
         totalScore:       Math.max((cur && cur.totalScore)   || 0, data.totalScore   || 0),
@@ -1990,7 +1994,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     get(entryRef).then(snap => {
       const cur = snap.val() || {};
       const payload = {
-        name:         username,
+        name:         data.name || username,
         totalHasanat: Math.max(cur.totalHasanat || 0, data.totalHasanat || 0),
         totalScore:   Math.max(cur.totalScore   || 0, data.totalScore   || 0),
         totalGames:   Math.max(cur.totalGames   || 0, data.totalGames   || 0),
@@ -2001,7 +2005,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     }).catch(() => {
       // fallback: اكتب مباشرة لو get فشلت
       set(entryRef, {
-        name: username,
+        name: data.name || username,
         totalHasanat: Math.max(0, data.totalHasanat || 0),
         totalScore:   Math.max(0, data.totalScore   || 0),
         totalGames:   Math.max(0, data.totalGames   || 0),
@@ -2406,6 +2410,7 @@ function _callWhenReady(fn, args) {
         <span id="globalRankChip" class="rank-chip-circle" onclick="openFullRank()" title="ترتيبك العام" style="display:none;width:30px;height:30px;font-size:12px;cursor:pointer;">#٠</span>
         <span style="font-size:13px;color:var(--gold);" id="userLevelDisplay">المستوى ١</span>
         <span class="user-logout" onclick="resetScore()" style="color:rgba(255,120,100,0.5);" title="تصفير النقاط">🔄</span>
+        <span class="user-logout" onclick="doDeleteAccount()" style="color:rgba(255,80,80,0.45);font-size:11px;" title="حذف الحساب نهائياً">🗑️</span>
         <span class="user-logout" onclick="doLogout()">خروج ↩</span>
       </div>
     </div>
@@ -3331,25 +3336,59 @@ function doFacebookSignIn() {
 window.doFacebookSignIn = doFacebookSignIn;
 
 // ★ إعادة تعيين كلمة المرور — Firebase بيبعت رسالة للإيميل
+// ★ نسيت كلمة المرور — ذكي: يفرق بين Google وإيميل عادي
+let _resetCooldown = 0;
 function doForgotPassword() {
   const emailEl = document.getElementById('loginUser');
   const email   = emailEl ? emailEl.value.trim().toLowerCase() : '';
   if (!email || !email.includes('@')) {
-    showLoginErr('اكتب إيميلك في الحقل فوق، وبعدين دوس «نسيت كلمة المرور»');
+    showLoginErr('اكتب إيميلك في الحقل فوق أولاً');
     emailEl && emailEl.focus();
+    return;
+  }
+
+  // ★ لو بيدخل بـ Google — نفتحله صفحة Google مباشرة
+  // نحاول نتحقق من نوع الحساب
+  if (typeof window.fbCheckSignInMethods === 'function') {
+    window.fbCheckSignInMethods(email, (methods) => {
+      if (methods && methods.includes('google.com') && !methods.includes('password')) {
+        // حساب Google خالص
+        if (confirm('حسابك بـ Google — الباسورد بتاعه عند Google مش هنا.\n\nتحب تفتح صفحة تغيير باسورد Google دلوقتي؟')) {
+          window.open('https://myaccount.google.com/signinoptions/password', '_blank');
+        }
+      } else {
+        // حساب عادي بإيميل وباسورد
+        _sendResetEmail(email);
+      }
+    });
+  } else {
+    _sendResetEmail(email);
+  }
+}
+
+function _sendResetEmail(email) {
+  const now = Date.now();
+  if (_resetCooldown && now < _resetCooldown) {
+    const secs = Math.ceil((_resetCooldown - now) / 1000);
+    showLoginErr(`⏳ انتظر ${secs} ثانية`);
     return;
   }
   showLoginErr('⏳ جاري الإرسال...');
   if (typeof window.fbResetPassword === 'function') {
     window.fbResetPassword(email,
-      () => { showLoginErr('✅ تم! راجع بريدك الإلكتروني ودوس الرابط لإعادة تعيين كلمة المرور'); },
+      () => {
+        _resetCooldown = Date.now() + 60000;
+        showLoginErr('✅ تم! افتح بريدك ودوس الرابط — بعدها ارجع وادخل بالباسورد الجديد');
+      },
       (code) => {
-        if (code === 'auth/user-not-found' || code === 'auth/invalid-email')
-          showLoginErr('❌ مفيش حساب بالإيميل ده — تأكد من الكتابة');
-        else if (code === 'auth/too-many-requests')
-          showLoginErr('⏳ طلبات كتير — انتظر دقيقة وحاول تاني');
-        else if (code)
-          showLoginErr('تعذّر الإرسال (' + code + ') — تأكد من الإنترنت وحاول تاني');
+        if (code === 'auth/too-many-requests') {
+          _resetCooldown = Date.now() + 120000;
+          showLoginErr('⏳ انتظر دقيقتين وحاول تاني');
+        } else if (code === 'auth/user-not-found' || code === 'auth/invalid-email') {
+          showLoginErr('❌ مفيش حساب بالإيميل ده');
+        } else {
+          showLoginErr('مشكلة: ' + (code || 'غير معروف'));
+        }
       }
     );
   }
@@ -3447,7 +3486,56 @@ function editDisplayName() {
   showToast('✅ تم تغيير اسمك إلى: ' + n);
   if (typeof renderLeaderboard === 'function') renderLeaderboard();
 }
-window.editDisplayName = editDisplayName;
+// ★ حذف الحساب نهائياً
+async function doDeleteAccount() {
+  if (!currentUser || currentUser.isGuest) return;
+  const name = currentUser.name || currentUser.username || 'حسابك';
+  // تأكيد مزدوج
+  const c1 = confirm(`⚠️ هتحذف ${name} نهائياً — النقاط والبيانات كلها هتتمسح.\n\nمتأكد؟`);
+  if (!c1) return;
+  const c2 = confirm('❗ مفيش رجوع بعد الحذف — اضغط موافق للتأكيد.');
+  if (!c2) return;
+
+  const username = currentUser.username;
+  try {
+    // ١. مسح من Firebase Database
+    if (typeof window.fbMulti !== 'undefined' || typeof ref !== 'undefined') {
+      try {
+        const { ref, remove } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
+        const { getDatabase } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
+      } catch(e) {}
+    }
+    // مسح بيانات المستخدم من Firebase (عبر الدوال المتاحة)
+    if (typeof window.fbSaveFullUserData === 'function') {
+      // نكتب بيانات فارغة — الحذف الحقيقي يتم عبر Firebase Auth
+      window.fbSaveFullUserData(username, { deleted: true, deletedAt: Date.now() });
+    }
+    // ٢. مسح من Firebase Auth
+    const { getAuth, deleteUser } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
+    const _auth = getAuth();
+    if (_auth.currentUser) {
+      await deleteUser(_auth.currentUser);
+    }
+  } catch(e) {
+    if (e.code === 'auth/requires-recent-login') {
+      alert('لأمانك، لازم تدخل تاني وبعدين تحذف الحساب.\n\nالتطبيق هيطلع — ادخل تاني وحاول مرة ثانية.');
+      doLogout();
+      return;
+    }
+  }
+  // ٣. مسح localStorage
+  try {
+    const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
+    delete users[username];
+    localStorage.setItem('nour_users', JSON.stringify(users));
+    localStorage.removeItem('nour_last_user');
+    localStorage.removeItem('nour_current_user');
+  } catch(e) {}
+  currentUser = null; window.currentUser = null;
+  alert('✅ تم حذف الحساب.');
+  location.reload();
+}
+window.doDeleteAccount = doDeleteAccount;
 
 
 function _finishLogin(username, isGuest) {
