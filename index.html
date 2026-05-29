@@ -1105,6 +1105,17 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
 
 @keyframes livePulse { 0%{transform:scale(1);} 50%{transform:scale(1.25);} 100%{transform:scale(1);} }
+
+/* ★ زرار إظهار/إخفاء كلمة المرور */
+.pw-wrap { position:relative; }
+.pw-wrap input { width:100%; padding-left:36px !important; }
+.pw-eye {
+  position:absolute; left:10px; top:50%; transform:translateY(-50%);
+  background:none; border:none; cursor:pointer; padding:4px;
+  color:rgba(201,151,58,0.6); font-size:16px; line-height:1;
+  display:flex; align-items:center;
+}
+.pw-eye:hover { color:var(--gold); }
 </style>
 
 <!-- Firebase -->
@@ -1198,7 +1209,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       .catch(e => onError && onError(e.code));
   };
 
-  // ★ تسجيل الدخول بـ Google — ضغطة واحدة والكل أوتوماتيك
+  // ★ تسجيل الدخول بـ Google
   window.fbGoogleSignIn = function(onSuccess, onError) {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
@@ -1211,7 +1222,11 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         onSuccess && onSuccess({ email, name, photoURL });
       })
       .catch(e => {
-        if (e.code === 'auth/popup-closed-by-user') return; // User closed popup
+        if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+        if (e.code === 'auth/popup-blocked') {
+          onError && onError('auth/popup-blocked');
+          return;
+        }
         onError && onError(e.code);
       });
   };
@@ -2269,8 +2284,10 @@ function _callWhenReady(fn, args) {
       </div>
       <div class="login-field">
         <label>كلمة المرور</label>
-        <span class="login-field-icon">🔒</span>
-        <input type="password" id="loginPass" name="password" autocomplete="current-password" placeholder="••••••••">
+        <div class="pw-wrap">
+          <input type="password" id="loginPass" name="password" autocomplete="current-password" placeholder="••••••••">
+          <button type="button" class="pw-eye" onclick="togglePw('loginPass',this)" title="إظهار/إخفاء">👁</button>
+        </div>
       </div>
       <div style="text-align:right;margin-bottom:10px;">
         <span onclick="doForgotPassword()" style="font-size:11px;color:rgba(201,151,58,0.6);cursor:pointer;text-decoration:underline;">نسيت كلمة المرور؟</span>
@@ -2304,13 +2321,17 @@ function _callWhenReady(fn, args) {
       </div>
       <div class="login-field">
         <label>كلمة المرور</label>
-        <span class="login-field-icon">🔒</span>
-        <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="٦ أحرف على الأقل">
+        <div class="pw-wrap">
+          <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="٦ أحرف على الأقل">
+          <button type="button" class="pw-eye" onclick="togglePw('regPass',this)" title="إظهار/إخفاء">👁</button>
+        </div>
       </div>
       <div class="login-field">
         <label>تأكيد كلمة المرور</label>
-        <span class="login-field-icon">✅</span>
-        <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور">
+        <div class="pw-wrap">
+          <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور">
+          <button type="button" class="pw-eye" onclick="togglePw('regPass2',this)" title="إظهار/إخفاء">👁</button>
+        </div>
       </div>
       <button type="submit" class="login-btn">إنشاء الحساب 🌟</button>
     </form>
@@ -3036,6 +3057,37 @@ function switchTab(tab) {
   document.getElementById('loginErr').textContent = '';
 }
 
+// ★ إظهار/إخفاء كلمة المرور
+function togglePw(id, btn) {
+  const inp = document.getElementById(id);
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
+}
+window.togglePw = togglePw;
+
+// ★ مسح الحسابات القديمة (بالـ username) وإبقاء الجديدة (بالإيميل) فقط
+(function _cleanOldAccounts() {
+  try {
+    const raw = localStorage.getItem('nour_users');
+    if (!raw) return;
+    const all = JSON.parse(raw);
+    const clean = {};
+    Object.entries(all).forEach(([k, v]) => {
+      // نحتفظ بس بالحسابات التي مفتاحها إيميل (يحتوي @)
+      if (k.includes('@')) clean[k] = v;
+    });
+    localStorage.setItem('nour_users', JSON.stringify(clean));
+    // لو الحساب المحفوظ قديم (بدون @) امسحه
+    const last = localStorage.getItem('nour_last_user');
+    if (last && !last.includes('@')) {
+      localStorage.removeItem('nour_last_user');
+      localStorage.removeItem('nour_current_user');
+    }
+  } catch(e) {}
+})();
+
 function doLogin() {
   const user = document.getElementById('loginUser').value.trim().toLowerCase();
   const pass = document.getElementById('loginPass').value;
@@ -3203,35 +3255,41 @@ function doGoogleSignIn() {
   window.fbGoogleSignIn(({ email, name, photoURL }) => {
     _restore();
     currentUser = null; window.currentUser = null;
-    // ابحث في البيانات المحلية أو أنشئ حساباً جديداً
     const users = getUsers();
     let userData = users[email] || null;
     if (!userData) {
-      // حساب Google جديد
       userData = createDefaultUserData();
-      userData.name  = name;
-      userData.email = email;
-      userData.username = email;
-      userData.isGuest = false;
-      // احفظه في Firebase
-      if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
-      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false, name });
-    } else {
-      // حساب موجود — حدّث الاسم لو Google بعت أحسن منه
-      if (name && (!userData.name || userData.name === email)) userData.name = name;
     }
+    // ★ دايمًا نحدّث الاسم من Google — هو المصدر الأصح
+    userData.name     = name || userData.name || email.split('@')[0];
+    userData.email    = email;
+    userData.username = email;
+    userData.isGuest  = false;
     // احفظ محلياً
     try {
       const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
       _u[email] = userData;
       localStorage.setItem('nour_users', JSON.stringify(_u));
     } catch(e) {}
+    // احفظ في Firebase
+    if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+    if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false });
     // ادخل
     document.getElementById('loginScreen').classList.add('hide');
     loginSuccess(email, userData);
   }, (code) => {
     _restore();
-    if (code) showLoginErr('فشل الدخول بـ Google: ' + code);
+    if (code === 'auth/unauthorized-domain') {
+      showLoginErr('⚠️ لازم تضيف الدومين في Firebase:\nAuthentication → Settings → Authorized domains → Add domain:\nnourquranofficial.github.io');
+    } else if (code === 'auth/operation-not-allowed') {
+      showLoginErr('⚠️ Google غير مفعّل — Firebase → Authentication → Sign-in method → Google → Enable + اختار Support Email');
+    } else if (code === 'auth/popup-blocked') {
+      showLoginErr('⚠️ المتصفح حجب الـ Popup — اسمح بالـ popups لهذا الموقع وحاول تاني');
+    } else if (code === 'auth/network-request-failed') {
+      showLoginErr('⚠️ مشكلة في الإنترنت — تأكد من الاتصال وحاول تاني');
+    } else if (code) {
+      showLoginErr('خطأ: ' + code);
+    }
   });
 }
 window.doGoogleSignIn = doGoogleSignIn;
@@ -3276,16 +3334,21 @@ function doForgotPassword() {
   const emailEl = document.getElementById('loginUser');
   const email   = emailEl ? emailEl.value.trim().toLowerCase() : '';
   if (!email || !email.includes('@')) {
-    showLoginErr('اكتب إيميلك الأول في الحقل فوق، وبعدين دوس «نسيت كلمة المرور»');
+    showLoginErr('اكتب إيميلك في الحقل فوق، وبعدين دوس «نسيت كلمة المرور»');
     emailEl && emailEl.focus();
     return;
   }
+  showLoginErr('⏳ جاري الإرسال...');
   if (typeof window.fbResetPassword === 'function') {
     window.fbResetPassword(email,
-      () => { showLoginErr('✅ تم الإرسال! راجع صندوق بريدك الإلكتروني وضغط الرابط'); },
+      () => { showLoginErr('✅ تم! راجع بريدك الإلكتروني ودوس الرابط لإعادة تعيين كلمة المرور'); },
       (code) => {
-        if (code === 'auth/user-not-found') showLoginErr('❌ مفيش حساب مسجّل بالإيميل ده');
-        else showLoginErr('مشكلة في الإرسال — اتأكد من الإيميل وحاول تاني');
+        if (code === 'auth/user-not-found' || code === 'auth/invalid-email')
+          showLoginErr('❌ مفيش حساب بالإيميل ده — تأكد من الكتابة');
+        else if (code === 'auth/too-many-requests')
+          showLoginErr('⏳ طلبات كتير — انتظر دقيقة وحاول تاني');
+        else if (code)
+          showLoginErr('تعذّر الإرسال (' + code + ') — تأكد من الإنترنت وحاول تاني');
       }
     );
   }
