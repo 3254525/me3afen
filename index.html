@@ -316,20 +316,40 @@ body:has(#loginScreen:not(.hide)) { overflow:hidden; }
 
 @media(max-width:700px) {
   .login-art { display:none; }
-  .login-panel { max-width:100%; padding:36px 24px; }
+  .login-panel { max-width:100%; padding:20px 20px; }
   .login-panel::before { display:none; }
 }
 @media(max-width:480px) {
-  .login-panel { padding:clamp(12px, 3vh, 28px) 20px; }
-  .login-brand-name { font-size:26px; }
-  .login-brand { margin-bottom:20px; }
-  .login-tabs { margin-bottom:16px; }
+  .login-panel { padding:16px 16px; }
   .login-field { margin-bottom:10px; }
   .login-field input { padding:10px 14px 10px 40px; font-size:14px; }
-  .login-btn { padding:12px; font-size:15px; }
-  .login-divider { margin:10px 0; }
+  .login-field label { font-size:10px; margin-bottom:5px; }
+  .login-btn { padding:12px; font-size:15px; margin-top:2px; }
+  .login-divider { margin:8px 0; }
   .login-guest { padding:6px; font-size:12px; }
+  .login-tabs { margin-bottom:14px; }
+  .login-tab { padding:8px; font-size:13px; }
 }
+/* شاشات صغيرة جداً (أقل من 380px) */
+@media(max-width:380px) {
+  .login-panel { padding:12px 14px; }
+  .login-field { margin-bottom:8px; }
+  .login-field input { padding:9px 12px 9px 36px; font-size:13px; }
+  .login-btn { padding:11px; font-size:14px; }
+}
+/* أجهزة اللوح (tablet) */
+@media(min-width:700px) and (max-width:1024px) {
+  .login-panel { max-width:400px; }
+}
+/* ضمان عدم الـ overflow على أي جهاز */
+#loginScreen {
+  -webkit-overflow-scrolling:touch;
+}
+.login-panel {
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+}
+.login-panel::-webkit-scrollbar { display:none; }
 
 /* ===== HEADER ===== */
 .header { text-align:center; padding:20px 0 14px; }
@@ -1122,7 +1142,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getDatabase, ref, set, remove, onValue, get, update, onDisconnect, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, FacebookAuthProvider, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, FacebookAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDDod7rBSs6Oa71JufQye6PUkUHZ7iZCVk",
@@ -1193,17 +1213,37 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       .catch(e => onError && onError(e.code));
   };
 
-  // ★ Google — redirect (أشغل على موبايل وGitHub Pages)
+  // ★ Google — popup صغير زي ما بتكون عادي
   window.fbGoogleSignIn = function(onSuccess, onError) {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
-    signInWithRedirect(auth, provider).catch(e => onError && onError(e.code));
+    signInWithPopup(auth, provider)
+      .then(result => {
+        const u = result.user;
+        const email = (u.email || '').toLowerCase();
+        const name  = u.displayName || email.split('@')[0];
+        onSuccess && onSuccess({ email, name });
+      })
+      .catch(e => {
+        if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+        onError && onError(e.code);
+      });
   };
 
-  // ★ Facebook — redirect
+  // ★ Facebook — popup
   window.fbFacebookSignIn = function(onSuccess, onError) {
     const provider = new FacebookAuthProvider();
-    signInWithRedirect(auth, provider).catch(e => onError && onError(e.code));
+    signInWithPopup(auth, provider)
+      .then(result => {
+        const u = result.user;
+        const email = (u.email || '').toLowerCase();
+        const name  = u.displayName || email.split('@')[0];
+        onSuccess && onSuccess({ email, name });
+      })
+      .catch(e => {
+        if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+        onError && onError(e.code);
+      });
   };
 
   // ★ معالجة نتيجة الـ redirect لما يرجع المستخدم
@@ -3251,38 +3291,42 @@ function doRegister() {
   _tryRegister(0);
 }
 
-// ★ تسجيل الدخول بـ Google (redirect — أموثق على موبايل)
+// ★ تسجيل الدخول بـ Google (popup)
 function doGoogleSignIn() {
-  const btn = document.getElementById('googleSignInBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري...'; }
-  if (typeof window.fbGoogleSignIn === 'function') {
-    window.fbGoogleSignIn(null, (code) => {
-      if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="17" height="17" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.2l6.7-6.7C35.8 2.5 30.2 0 24 0 14.6 0 6.6 5.6 2.8 13.7l7.8 6C12.4 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.5 2.8-2.2 5.2-4.7 6.8l7.4 5.7c4.3-4 6.8-9.9 6.8-16.5z"/><path fill="#FBBC05" d="M10.6 28.3A14.5 14.5 0 0 1 9.5 24c0-1.5.3-3 .7-4.3l-7.8-6A23.9 23.9 0 0 0 0 24c0 3.9.9 7.5 2.8 10.7l7.8-6.4z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.5l-7.4-5.7c-2 1.4-4.6 2.2-7.8 2.2-6.1 0-11.3-4.1-13.2-9.7l-7.8 6.4C6.6 42.4 14.6 48 24 48z"/></svg> Google'; }
-      if (code === 'auth/unauthorized-domain') showLoginErr('⚠️ أضف nourquranofficial.github.io في Firebase → Authentication → Settings → Authorized domains');
-      else if (code === 'auth/operation-not-allowed') showLoginErr('⚠️ فعّل Google في Firebase → Authentication → Sign-in method → Google');
-      else if (code) showLoginErr('خطأ Google: ' + code);
-    });
-  } else {
-    showLoginErr('⏳ جاري التحميل — حاول تاني');
-    if (btn) { btn.disabled = false; }
-  }
+  if (typeof window.fbGoogleSignIn !== 'function') { showLoginErr('⏳ جاري التحميل — حاول تاني'); return; }
+  window.fbGoogleSignIn(({ email, name }) => {
+    const users = getUsers();
+    let userData = users[email] || createDefaultUserData();
+    userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
+    try { const _u = JSON.parse(localStorage.getItem('nour_users')||'{}'); _u[email]=userData; localStorage.setItem('nour_users',JSON.stringify(_u)); } catch(e) {}
+    if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+    if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, {...userData, isGuest:false});
+    document.getElementById('loginScreen').classList.add('hide');
+    loginSuccess(email, userData);
+  }, (code) => {
+    if (code === 'auth/unauthorized-domain') showLoginErr('⚠️ أضف nourquranofficial.github.io في Firebase → Authentication → Authorized domains');
+    else if (code) showLoginErr('خطأ: ' + code);
+  });
 }
 window.doGoogleSignIn = doGoogleSignIn;
 
-// ★ تسجيل الدخول بـ Facebook (redirect)
+// ★ تسجيل الدخول بـ Facebook (popup)
 function doFacebookSignIn() {
-  const btn = document.getElementById('facebookSignInBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري...'; }
-  if (typeof window.fbFacebookSignIn === 'function') {
-    window.fbFacebookSignIn(null, (code) => {
-      if (btn) { btn.disabled = false; btn.textContent = 'Facebook'; }
-      if (code === 'auth/operation-not-allowed') showLoginErr('⚠️ فعّل Facebook في Firebase → Authentication → Sign-in method');
-      else if (code) showLoginErr('خطأ Facebook: ' + code);
-    });
-  } else {
-    showLoginErr('⏳ جاري التحميل — حاول تاني');
-    if (btn) btn.disabled = false;
-  }
+  if (typeof window.fbFacebookSignIn !== 'function') { showLoginErr('⏳ جاري التحميل — حاول تاني'); return; }
+  window.fbFacebookSignIn(({ email, name }) => {
+    if (!email) { showLoginErr('Facebook ما بعتش الإيميل — تأكد من إعدادات التطبيق'); return; }
+    const users = getUsers();
+    let userData = users[email] || createDefaultUserData();
+    userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
+    try { const _u = JSON.parse(localStorage.getItem('nour_users')||'{}'); _u[email]=userData; localStorage.setItem('nour_users',JSON.stringify(_u)); } catch(e) {}
+    if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+    if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, {...userData, isGuest:false});
+    document.getElementById('loginScreen').classList.add('hide');
+    loginSuccess(email, userData);
+  }, (code) => {
+    if (code === 'auth/account-exists-with-different-credential') showLoginErr('الإيميل ده مسجّل بطريقة تانية — جرّب Google');
+    else if (code) showLoginErr('خطأ Facebook: ' + code);
+  });
 }
 window.doFacebookSignIn = doFacebookSignIn;
 
