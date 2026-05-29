@@ -184,8 +184,10 @@ body:has(#loginScreen:not(.hide)) { overflow:hidden; }
 .login-panel {
   width:100%; max-width:440px;
   background:linear-gradient(160deg, #1e1508 0%, #12100a 60%, #0e1810 100%);
-  display:flex; flex-direction:column; justify-content:center;
-  padding:clamp(16px, 4vh, 44px) 36px; position:relative; z-index:2; overflow:hidden;
+  display:flex; flex-direction:column; justify-content:flex-start;
+  padding:clamp(16px, 3vh, 36px) 28px;
+  padding-top:max(env(safe-area-inset-top,0px), clamp(16px,3vh,36px));
+  position:relative; z-index:2; overflow-y:auto;
   box-shadow:-20px 0 60px rgba(0,0,0,0.5);
 }
 /* خط ذهبي رفيع على اليمين */
@@ -1109,7 +1111,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getDatabase, ref, set, remove, onValue, get, update, onDisconnect, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, FacebookAuthProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDDod7rBSs6Oa71JufQye6PUkUHZ7iZCVk",
@@ -1135,7 +1137,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     const s = (username || '').trim();
     if (!s) return 'u';
     if (/^[\x21-\x7E]+$/.test(s)) {            // ASCII مطبوع بدون مسافات = النظام القديم بالظبط
-      return s.replace(/[\.\#\$\/\[\]]/g, '_').toLowerCase();
+      return s.replace(/[\.\#\$\/\[\]\@]/g, '_').toLowerCase(); // ★ أضفنا @ عشان الإيميلات
     }
     let out = '';                              // غير كده → hex
     const bytes = new TextEncoder().encode(s);
@@ -1169,28 +1171,67 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   // ============================================================
   // ===== FIREBASE AUTH — login على كل الأجهزة =====
   // ============================================================
-  // بنحول اسم المستخدم لـ email وهمي (Firebase Auth بيحتاج email)
-  function toFbEmail(username) {
-    return makeKey(username, false).toLowerCase() + '@gmail.com';
-  }
+  // ★ دلوقتي بنستخدم إيميل حقيقي مباشرةً (أفضل للأمان + reset تلقائي)
+  function toFbEmail(email) { return email.trim().toLowerCase(); }
   function padPass(p) { return p + '__nr'; }
 
-  window.fbRegister = function(username, password, onSuccess, onError) {
-    const email = toFbEmail(username);
-    const key   = dataKey(username);
+  // ★ تسجيل الدخول بـ Facebook
+  window.fbFacebookSignIn = function(onSuccess, onError) {
+    const provider = new FacebookAuthProvider();
+    signInWithPopup(auth, provider)
+      .then((result) => {
+        const gUser = result.user;
+        const email = (gUser.email || '').toLowerCase();
+        const name  = gUser.displayName || email.split('@')[0];
+        onSuccess && onSuccess({ email: email || (gUser.uid + '@facebook.com'), name });
+      })
+      .catch(e => {
+        if (e.code === 'auth/popup-closed-by-user') return;
+        onError && onError(e.code);
+      });
+  };
 
-    createUserWithEmailAndPassword(auth, email, padPass(password))
+  // ★ إعادة تعيين كلمة المرور — Firebase بيبعت الرسالة للإيميل
+  window.fbResetPassword = function(email, onSuccess, onError) {
+    sendPasswordResetEmail(auth, email.trim().toLowerCase())
+      .then(() => onSuccess && onSuccess())
+      .catch(e => onError && onError(e.code));
+  };
+
+  // ★ تسجيل الدخول بـ Google — ضغطة واحدة والكل أوتوماتيك
+  window.fbGoogleSignIn = function(onSuccess, onError) {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    signInWithPopup(auth, provider)
+      .then((result) => {
+        const gUser   = result.user;
+        const email   = (gUser.email || '').toLowerCase();
+        const name    = gUser.displayName || email.split('@')[0];
+        const photoURL = gUser.photoURL || '';
+        onSuccess && onSuccess({ email, name, photoURL });
+      })
+      .catch(e => {
+        if (e.code === 'auth/popup-closed-by-user') return; // User closed popup
+        onError && onError(e.code);
+      });
+  };
+
+  window.fbRegister = function(email, password, onSuccess, onError) {
+    const fbEmail = toFbEmail(email);
+    const key     = dataKey(email); // مفتاح مبني على الإيميل
+
+    createUserWithEmailAndPassword(auth, fbEmail, padPass(password))
       .then(() => {
         // احفظ الباسورد محلياً عشان الدخول التلقائي المرة الجاية
         try {
           const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-          if (!_u[username]) _u[username] = {};
-          _u[username].password = btoa(password);
+          if (!_u[email]) _u[email] = {};
+          _u[email].password = btoa(password);
           localStorage.setItem('nour_users', JSON.stringify(_u));
         } catch(e) {}
         // اكتب الـ profile وانتظره يخلص قبل الدخول عشان الاسم يتسجّل صح
         return set(ref(db, 'users/' + key + '/profile'), {
-          username, createdAt: Date.now()
+          email, createdAt: Date.now()
         }).catch(() => {}).then(() => onSuccess());
       })
       .catch(e => {
@@ -1208,37 +1249,32 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       });
   };
 
-  window.fbLogin = function(username, password, onSuccess, onError) {
-    const email = toFbEmail(username);
-    signInWithEmailAndPassword(auth, email, padPass(password))
+  window.fbLogin = function(email, password, onSuccess, onError) {
+    const fbEmail = toFbEmail(email);
+    signInWithEmailAndPassword(auth, fbEmail, padPass(password))
       .then(() => {
         // احفظ الباسورد محلياً عشان المرة الجاية يدخل فوري بدون Firebase
         try {
           const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-          if (!_u[username]) _u[username] = {};
-          _u[username].password = btoa(password);
+          if (!_u[email]) _u[email] = {};
+          _u[email].password = btoa(password);
           localStorage.setItem('nour_users', JSON.stringify(_u));
         } catch(e) {}
         onSuccess();
       })
       .catch((e) => {
         if (e.code === 'auth/too-many-requests') {
-          // Firebase جمّد الحساب مؤقتاً — تحقق من الباسورد المحلي فقط، ولا تدخّل أحد بدونه
           try {
             const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
-            if (users[username] && users[username].password === btoa(password)) {
-              onSuccess();
-              return;
-            }
+            if (users[email] && users[email].password === btoa(password)) { onSuccess(); return; }
           } catch(ex) {}
-          // ★ الإصلاح: مش هندخل حد بدون تحقق حتى لو Firebase محجوب
           onError('الحساب محجوب مؤقتاً من Firebase، حاول بعد قليل');
         } else if (e.code === 'auth/user-not-found') {
-          onError('الحساب غير موجود، أنشئ حساباً جديداً');
+          onError('الإيميل ده مش مسجّل — أنشئ حساباً جديداً');
         } else if (e.code === 'auth/operation-not-allowed' || e.code === 'auth/configuration-not-found') {
           onError('⛔ خدمة الحسابات مش مفعّلة في Firebase (Authentication ← Email/Password ← Enable).');
         } else if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
-          onError('اسم المستخدم أو كلمة المرور خاطئة');
+          onError('الإيميل أو كلمة المرور خاطئة');
         } else if (e.code === 'auth/network-request-failed') {
           onError('في مشكلة في الإنترنت — اتأكد من اتصالك');
         } else {
@@ -2213,33 +2249,46 @@ function _callWhenReady(fn, args) {
 
   <!-- البانل الأيمن -->
   <div class="login-panel">
-    <div class="login-brand">
-      <div class="login-brand-icon">🌙</div>
-      <div class="login-brand-text">
-        <div class="login-brand-name">نـور</div>
-        <div class="login-brand-sub">تحدي حفظ القرآن الكريم</div>
-      </div>
+    <!-- اللوجو -->
+    <div style="text-align:center;padding:10px 0 14px;border-bottom:1px solid rgba(201,151,58,0.15);margin-bottom:14px;">
+      <div style="font-size:48px;line-height:1;margin-bottom:3px;filter:drop-shadow(0 0 18px rgba(201,151,58,0.7));">🌙</div>
+      <div style="font-family:'Amiri',serif;font-size:32px;color:var(--gold);letter-spacing:3px;text-shadow:0 0 20px rgba(201,151,58,0.5);">نـور</div>
+      <div style="font-size:11px;color:rgba(245,217,139,0.6);margin-top:2px;">تحدي حفظ القرآن الكريم</div>
     </div>
 
     <div class="login-tabs">
-      <div class="login-tab active" onclick="switchTab('login')">تسجيل الدخول</div>
+      <div class="login-tab active" onclick="switchTab('login')">دخول</div>
       <div class="login-tab" onclick="switchTab('register')">حساب جديد</div>
     </div>
 
     <form id="loginForm" autocomplete="on" onsubmit="event.preventDefault(); doLogin(); return false;" style="margin:0;">
       <div class="login-field">
-        <label>اسم المستخدم</label>
-        <span class="login-field-icon">👤</span>
-        <input type="text" id="loginUser" name="username" autocomplete="username" placeholder="أدخل اسمك...">
+        <label>البريد الإلكتروني</label>
+        <span class="login-field-icon">📧</span>
+        <input type="email" id="loginUser" name="email" autocomplete="email" placeholder="example@gmail.com" dir="ltr">
       </div>
       <div class="login-field">
         <label>كلمة المرور</label>
         <span class="login-field-icon">🔒</span>
         <input type="password" id="loginPass" name="password" autocomplete="current-password" placeholder="••••••••">
       </div>
-      <button type="submit" class="login-btn">دخول ✨</button>
-      <div style="text-align:center;margin-top:10px;">
+      <div style="text-align:right;margin-bottom:10px;">
+        <span onclick="doForgotPassword()" style="font-size:11px;color:rgba(201,151,58,0.6);cursor:pointer;text-decoration:underline;">نسيت كلمة المرور؟</span>
       </div>
+      <!-- Google + Facebook -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <button type="button" onclick="doGoogleSignIn()" id="googleSignInBtn" style="display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 6px;background:#fff;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;color:#1f1f1f;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);">
+          <svg width="17" height="17" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.2l6.7-6.7C35.8 2.5 30.2 0 24 0 14.6 0 6.6 5.6 2.8 13.7l7.8 6C12.4 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.5 2.8-2.2 5.2-4.7 6.8l7.4 5.7c4.3-4 6.8-9.9 6.8-16.5z"/><path fill="#FBBC05" d="M10.6 28.3A14.5 14.5 0 0 1 9.5 24c0-1.5.3-3 .7-4.3l-7.8-6A23.9 23.9 0 0 0 0 24c0 3.9.9 7.5 2.8 10.7l7.8-6.4z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.5l-7.4-5.7c-2 1.4-4.6 2.2-7.8 2.2-6.1 0-11.3-4.1-13.2-9.7l-7.8 6.4C6.6 42.4 14.6 48 24 48z"/></svg>
+          Google
+        </button>
+        <button type="button" onclick="doFacebookSignIn()" id="facebookSignInBtn" style="display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 6px;background:#1877F2;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="#fff"><path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.513c-1.491 0-1.956.93-1.956 1.886v2.268h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/></svg>
+          Facebook
+        </button>
+      </div>
+      <button type="submit" class="login-btn">دخول ✨</button>
+      <div class="login-divider"><span>أو</span></div>
+      <div class="login-guest" onclick="guestLogin()">🕊️ الدخول بدون حساب (ضيف)</div>
     </form>
 
     <form id="registerForm" autocomplete="on" onsubmit="event.preventDefault(); doRegister(); return false;" style="display:none;margin:0;">
@@ -2249,28 +2298,26 @@ function _callWhenReady(fn, args) {
         <input type="text" id="regName" name="name" autocomplete="name" placeholder="اسمك زي ما هتظهر للناس">
       </div>
       <div class="login-field">
-        <label>اسم المستخدم (للدخول)</label>
-        <span class="login-field-icon">👤</span>
-        <input type="text" id="regUser" name="username" autocomplete="username" placeholder="مثلاً: mohamed_2025 — لازم يكون فريد">
+        <label>البريد الإلكتروني</label>
+        <span class="login-field-icon">📧</span>
+        <input type="email" id="regEmail" name="email" autocomplete="email" placeholder="example@gmail.com" dir="ltr">
       </div>
       <div class="login-field">
         <label>كلمة المرور</label>
         <span class="login-field-icon">🔒</span>
-        <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="كلمة مرور قوية...">
+        <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="٦ أحرف على الأقل">
       </div>
       <div class="login-field">
         <label>تأكيد كلمة المرور</label>
         <span class="login-field-icon">✅</span>
-        <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور...">
+        <input type="password" id="regPass2" name="confirm-password" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور">
       </div>
       <button type="submit" class="login-btn">إنشاء الحساب 🌟</button>
     </form>
 
     <div class="login-err" id="loginErr"></div>
-    <div class="login-divider"><span>أو</span></div>
-    <div class="login-guest" onclick="guestLogin()">🕊️ الدخول بدون حساب (ضيف)</div>
-  </div>
 
+  </div>
 </div>
 
 <!-- ===== MAIN APP ===== -->
@@ -2990,15 +3037,10 @@ function switchTab(tab) {
 }
 
 function doLogin() {
-  const user = document.getElementById('loginUser').value.trim();
+  const user = document.getElementById('loginUser').value.trim().toLowerCase();
   const pass = document.getElementById('loginPass').value;
-  // 🔎 تشخيص: اكتب «تشخيص» أو diag في خانة الاسم واضغط دخول لفحص اتصال Firebase والصلاحيات
-  if (user === 'تشخيص' || user.toLowerCase() === 'diag') {
-    if (typeof window.nourDiag === 'function') window.nourDiag();
-    else { try { alert('أداة التشخيص لسه بتتحمّل، حاول بعد ثانية.'); } catch(e) {} }
-    return;
-  }
-  if (!user || !pass) { showLoginErr('أدخل اسم المستخدم وكلمة المرور'); return; }
+  if (!user || !pass) { showLoginErr('أدخل الإيميل وكلمة المرور'); return; }
+  if (!user.includes('@')) { showLoginErr('أدخل إيميلك (example@gmail.com)'); return; }
 
   // ── دخول فوري: أخفي اللوجين فوراً لو الباسورد صح محلياً ──
   const users = getUsers();
@@ -3105,18 +3147,14 @@ function doLogin() {
 }
 
 function doRegister() {
-  const name = document.getElementById('regName').value.trim();
-  const user = document.getElementById('regUser').value.trim();
-  const pass = document.getElementById('regPass').value;
+  const name  = document.getElementById('regName').value.trim();
+  const email = document.getElementById('regEmail').value.trim().toLowerCase();
+  const pass  = document.getElementById('regPass').value;
   const pass2 = document.getElementById('regPass2').value;
-  if (!name || !user || !pass) { showLoginErr('أدخل جميع البيانات (الاسم، اسم المستخدم، كلمة المرور)'); return; }
+  if (!name || !email || !pass) { showLoginErr('أدخل جميع البيانات (الاسم، الإيميل، كلمة المرور)'); return; }
   if (name.length < 2) { showLoginErr('الاسم يجب أن يكون حرفين على الأقل'); return; }
   if (name.length > 30) { showLoginErr('الاسم طويل جداً (٣٠ حرف كحد أقصى)'); return; }
-  if (user.length < 3) { showLoginErr('اسم المستخدم يجب أن يكون ٣ أحرف على الأقل'); return; }
-  // ★ امنع أسماء المستخدم الطويلة جداً اللي ممكن تطلّع إيميل غير صالح (حد Firebase ٦٤ حرف للإيميل)
-  if (typeof window._encodeKey === 'function' && window._encodeKey(user).length > 60) {
-    showLoginErr('اسم المستخدم طويل جداً — اختصره شوية (يفضّل أقل من ١٥ حرف عربي)'); return;
-  }
+  if (!email.includes('@') || !email.includes('.')) { showLoginErr('الإيميل غير صحيح — تأكد من كتابته صح'); return; }
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
 
@@ -3129,29 +3167,21 @@ function doRegister() {
   // نجاح التسجيل في Firebase
   const _onReg = () => {
     const defaultData = createDefaultUserData();
-    defaultData.name = name; // ★ الاسم للعرض (يظهر للناس بدل username)
-    // ★ لو فيه نقاط محلية للاسم ده (من قبل التوحيد) — احتفظ بيها بدل ما نبدأ من صفر
-    try {
-      const _lu = (getUsers() || {})[user] || {};
-      defaultData.totalScore   = Math.max(defaultData.totalScore   || 0, _lu.totalScore   || 0);
-      defaultData.totalGames   = Math.max(defaultData.totalGames   || 0, _lu.totalGames   || 0);
-      defaultData.totalHasanat = Math.max(defaultData.totalHasanat || 0, _lu.totalHasanat || 0);
-      defaultData.streak       = Math.max(defaultData.streak       || 0, _lu.streak       || 0);
-    } catch (e) {}
+    defaultData.name     = name;  // الاسم للعرض
+    defaultData.email    = email; // نحفظ الإيميل للرجوع إليه
+    defaultData.username = email; // الإيميل هو المعرّف
     if (typeof window.fbSaveFullUserData === 'function') {
-      window.fbSaveFullUserData(user, defaultData);
+      window.fbSaveFullUserData(email, defaultData);
     }
     if (typeof window.fbSaveUser === 'function') {
-      window.fbSaveUser(user, Object.assign({}, defaultData, { isGuest: false, name: name }));
+      window.fbSaveUser(email, Object.assign({}, defaultData, { isGuest: false, name: name }));
     }
     if (typeof window._markAuthDone === 'function') window._markAuthDone();
     window._registering = false;
-    loginSuccess(user, defaultData);
+    loginSuccess(email, defaultData);
   };
   const _onErr = (errMsg) => { window._registering = false; showLoginErr(errMsg); };
 
-  // ★★ التسجيل لازم يتم في Firebase بس — مفيش "حسابات محلية شبح" تشتغل على جهاز واحد بس ★★
-  //   لو Firebase لسه بيتحمّل، نستنّاه؛ ولو مش متاح خالص نقول رسالة واضحة من غير ما نعمل حساب محلي.
   const _tryRegister = (attempt) => {
     if (typeof window.fbRegister !== 'function') {
       if (attempt < 12) { setTimeout(() => _tryRegister(attempt + 1), 500); return; }
@@ -3159,10 +3189,108 @@ function doRegister() {
       showLoginErr('⏳ الاتصال بالخادم لسه بيتحمّل — اتأكد من الإنترنت وحاول تاني بعد ثانية.');
       return;
     }
-    window.fbRegister(user, pass, _onReg, _onErr);
+    window.fbRegister(email, pass, _onReg, _onErr);
   };
   _tryRegister(0);
 }
+
+// ★ تسجيل الدخول بـ Google — بضغطة واحدة
+function doGoogleSignIn() {
+  const btn = document.getElementById('googleSignInBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; }
+  const _restore = () => { if (btn) { btn.disabled = false; btn.style.opacity = '1'; } };
+  if (typeof window.fbGoogleSignIn !== 'function') { _restore(); showLoginErr('جاري التحميل — حاول ثانية'); return; }
+  window.fbGoogleSignIn(({ email, name, photoURL }) => {
+    _restore();
+    currentUser = null; window.currentUser = null;
+    // ابحث في البيانات المحلية أو أنشئ حساباً جديداً
+    const users = getUsers();
+    let userData = users[email] || null;
+    if (!userData) {
+      // حساب Google جديد
+      userData = createDefaultUserData();
+      userData.name  = name;
+      userData.email = email;
+      userData.username = email;
+      userData.isGuest = false;
+      // احفظه في Firebase
+      if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false, name });
+    } else {
+      // حساب موجود — حدّث الاسم لو Google بعت أحسن منه
+      if (name && (!userData.name || userData.name === email)) userData.name = name;
+    }
+    // احفظ محلياً
+    try {
+      const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
+      _u[email] = userData;
+      localStorage.setItem('nour_users', JSON.stringify(_u));
+    } catch(e) {}
+    // ادخل
+    document.getElementById('loginScreen').classList.add('hide');
+    loginSuccess(email, userData);
+  }, (code) => {
+    _restore();
+    if (code) showLoginErr('فشل الدخول بـ Google: ' + code);
+  });
+}
+window.doGoogleSignIn = doGoogleSignIn;
+
+// ★ تسجيل الدخول بـ Facebook
+function doFacebookSignIn() {
+  const btn = document.getElementById('facebookSignInBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; }
+  const _restore = () => { if (btn) { btn.disabled = false; btn.style.opacity = '1'; } };
+  if (typeof window.fbFacebookSignIn !== 'function') { _restore(); showLoginErr('جاري التحميل — حاول ثانية'); return; }
+  window.fbFacebookSignIn(({ email, name }) => {
+    _restore();
+    if (!email) { showLoginErr('Facebook لم يرسل الإيميل — تأكد من إعدادات التطبيق'); return; }
+    currentUser = null; window.currentUser = null;
+    const users = getUsers();
+    let userData = users[email] || null;
+    if (!userData) {
+      userData = createDefaultUserData();
+      userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
+      if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false, name });
+    } else { if (name && !userData.name) userData.name = name; }
+    try {
+      const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
+      _u[email] = userData;
+      localStorage.setItem('nour_users', JSON.stringify(_u));
+    } catch(e) {}
+    document.getElementById('loginScreen').classList.add('hide');
+    loginSuccess(email, userData);
+  }, (code) => {
+    _restore();
+    if (code === 'auth/account-exists-with-different-credential')
+      showLoginErr('الإيميل ده مسجّل بطريقة تانية (Google أو إيميل)');
+    else if (code)
+      showLoginErr('فشل الدخول بـ Facebook: ' + code);
+  });
+}
+window.doFacebookSignIn = doFacebookSignIn;
+
+// ★ إعادة تعيين كلمة المرور — Firebase بيبعت رسالة للإيميل
+function doForgotPassword() {
+  const emailEl = document.getElementById('loginUser');
+  const email   = emailEl ? emailEl.value.trim().toLowerCase() : '';
+  if (!email || !email.includes('@')) {
+    showLoginErr('اكتب إيميلك الأول في الحقل فوق، وبعدين دوس «نسيت كلمة المرور»');
+    emailEl && emailEl.focus();
+    return;
+  }
+  if (typeof window.fbResetPassword === 'function') {
+    window.fbResetPassword(email,
+      () => { showLoginErr('✅ تم الإرسال! راجع صندوق بريدك الإلكتروني وضغط الرابط'); },
+      (code) => {
+        if (code === 'auth/user-not-found') showLoginErr('❌ مفيش حساب مسجّل بالإيميل ده');
+        else showLoginErr('مشكلة في الإرسال — اتأكد من الإيميل وحاول تاني');
+      }
+    );
+  }
+}
+window.doForgotPassword = doForgotPassword;
 
 // ★ رجوع سريع من وضع الضيف لحساب اللاعب المحفوظ بدوسة واحدة
 function _switchBackToSaved() {
@@ -5825,7 +5953,7 @@ function handleResult(isRight, e) {
     if (state.combo >= 2) pts = Math.round(pts * Math.min(1 + (state.combo-1)*0.5, 4));
     if (state.mode==='timed' && state.timeLeft > 0) pts += state.timeLeft * 2;
     state.score += pts;
-    const hasanat = baseEarned;
+    const hasanat = pts; // ★ نفس الرقم المعروض — شامل الـcombo والسرعة
     state.sessionHasanat += hasanat;
     document.getElementById('liveScore').textContent = toArabicNum(state.score);
     const comboSuffix = state.combo >= 2 ? ` 🔥×${state.combo}` : '';
@@ -8089,7 +8217,10 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
   if (isRight) {
     // نقاط سرعة: ١٠ أساس + حتى ١٥ bonus حسب الوقت
     const speedBonus = Math.round(timeLeft * 1.0); // كل ثانية = نقطة إضافية
-    const earned = 10 + speedBonus;
+    // ★ بنطبّق مضاعف المستوى زي اللعبة العادية — عشان النقاط تتطابق
+    const _lvl = (typeof LEVEL_DEFS !== 'undefined' && currentUser && LEVEL_DEFS[currentUser.level || 0]);
+    const _mult = (_lvl && _lvl.hasanatMult) ? _lvl.hasanatMult : 1;
+    const earned = Math.round((10 + speedBonus) * _mult);
     multiState.myScore += earned;
     // ★ _peakScore: أعلى نقطة وصلها اللاعب — بتزيد بس ومش بترجع للوراء أبدًا
     multiState._peakScore = Math.max(multiState._peakScore || 0, multiState.myScore);
@@ -8340,15 +8471,15 @@ function _showMultiResults() {
 
   const finalRoom = window._multiRoomCache;
   const players = finalRoom ? { ...(finalRoom.players || {}) } : {};
-  // ★ نقطة اللاعب نفسه تتاخد من المصدر المحلي الموثوق (multiState.myScore) —
-  //   عشان متظهرش صفر لو كتابة الغرفة على Firebase اتأخّرت أو ما رجعتش لجهازه.
+  // ★★ أعلى نقطة وصلها اللاعب فعلاً — من myScore أو من _peakScore (مش بترست)
+  const _myTrueScore = Math.max(multiState.myScore || 0, multiState._peakScore || 0);
   if (pk) {
     const _prev = players[pk] || {};
     players[pk] = {
       ..._prev,
-      name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
-      finalScore: Math.max(_bestScore(_prev), multiState.myScore || 0),
-      score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
+      name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'أنت') : _bestName(_prev),
+      finalScore: Math.max(_bestScore(_prev), _myTrueScore),
+      score:      Math.max(_bestScore(_prev), _myTrueScore),
     };
   }
   // سجّل أعلى قيمة لكل لاعب (monotonic)
@@ -8404,8 +8535,8 @@ function _showMultiResults() {
             freshPlayers[pk] = {
               ..._prev,
               name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
-              finalScore: Math.max(_bestScore(_prev), multiState.myScore || 0),
-              score:      Math.max(_bestScore(_prev), multiState.myScore || 0),
+              finalScore: Math.max(_bestScore(_prev), _myTrueScore),
+              score:      Math.max(_bestScore(_prev), _myTrueScore),
             };
           }
           const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
