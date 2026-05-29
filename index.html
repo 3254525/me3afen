@@ -1206,7 +1206,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   function toFbEmail(email) { return email.trim().toLowerCase(); }
   function padPass(p) { return p + '__nr'; }
 
-  // ★ إعادة تعيين كلمة المرور — اللينك يفتح التطبيق مباشرة
+  // ★ إعادة تعيين كلمة المرور
   window.fbResetPassword = function(email, onSuccess, onError) {
     sendPasswordResetEmail(auth, email.trim().toLowerCase(), {
       url: 'https://nourquranofficial.github.io/nour/',
@@ -3409,37 +3409,67 @@ function doForgotPassword() {
 }
 window.doForgotPassword = doForgotPassword;
 
-// ★ معالجة اللينك لما يفتح التطبيق من إيميل الـ reset
+// ★ معالجة رابط إعادة تعيين كلمة المرور لما يفتح التطبيق
 (function _checkResetLink() {
-  const params = new URLSearchParams(window.location.search);
-  const mode = params.get('mode');
+  const params  = new URLSearchParams(window.location.search);
+  const mode    = params.get('mode');
   const oobCode = params.get('oobCode');
   if (mode !== 'resetPassword' || !oobCode) return;
 
-  // نشيل الـ params من الـ URL عشان ما يتشافوش
+  // نشيل الـ params من الـ URL
   window.history.replaceState({}, '', window.location.pathname);
   window._resetOobCode = oobCode;
 
-  // نتحقق من صلاحية الكود
-  const _tryOpen = () => {
-    if (typeof window.fbHandleResetCode !== 'function') {
-      setTimeout(_tryOpen, 500); return;
+  const _showModal = (email) => {
+    // أخفي شاشة الدخول
+    const ls = document.getElementById('loginScreen');
+    if (ls) ls.classList.add('hide');
+    // أظهر الـ modal
+    const modal = document.getElementById('resetPassModal');
+    const emailEl = document.getElementById('resetPassEmail');
+    if (emailEl) emailEl.textContent = email;
+    window._resetEmail = email;
+    if (modal) {
+      modal.style.display = 'flex';
+      // تأكد إن الحقول فاضية
+      const p1 = document.getElementById('resetNewPass');
+      const p2 = document.getElementById('resetNewPass2');
+      const err = document.getElementById('resetPassErr');
+      if (p1) p1.value = '';
+      if (p2) p2.value = '';
+      if (err) { err.textContent = ''; err.style.color = '#FF9E9E'; }
     }
-    window.fbHandleResetCode(oobCode, (email) => {
-      // الكود صالح — اعرض الموديل
-      const modal = document.getElementById('resetPassModal');
-      const emailEl = document.getElementById('resetPassEmail');
-      if (emailEl) emailEl.textContent = email;
-      window._resetEmail = email;
-      if (modal) { modal.style.display = 'flex'; }
-      // أخفي شاشة الدخول لو ظاهرة
-      const ls = document.getElementById('loginScreen');
-      if (ls) ls.classList.add('hide');
-    }, (code) => {
-      alert('الرابط منتهي الصلاحية أو مستخدم قبل كده — اطلب رابط جديد.');
-    });
   };
-  _tryOpen();
+
+  // انتظر حتى Firebase يتحمّل
+  let _tries = 0;
+  const _tryOpen = () => {
+    _tries++;
+    if (typeof window.fbHandleResetCode !== 'function') {
+      if (_tries < 30) setTimeout(_tryOpen, 500);
+      return;
+    }
+    window.fbHandleResetCode(oobCode,
+      (email) => _showModal(email),
+      (code) => {
+        const ls = document.getElementById('loginScreen');
+        if (ls) ls.classList.remove('hide');
+        if (code === 'auth/expired-action-code' || code === 'auth/invalid-action-code') {
+          // أظهر رسالة في شاشة الدخول
+          setTimeout(() => {
+            const err = document.getElementById('loginErr');
+            if (err) err.textContent = '❌ رابط إعادة التعيين انتهت صلاحيته — اطلب رابطاً جديداً';
+          }, 500);
+        }
+      }
+    );
+  };
+  // انتظر حتى الـ DOM يتحمّل
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_tryOpen, 300));
+  } else {
+    setTimeout(_tryOpen, 300);
+  }
 })();
 
 // ★ تأكيد الباسورد الجديد والدخول أوتوماتيك
@@ -3547,32 +3577,42 @@ function editDisplayName() {
   if (!currentUser) return;
   if (currentUser.isGuest) { showToast('🕊️ الضيوف ما يقدروش يغيّروا الاسم — سجّل حساب أولاً'); return; }
   const cur = currentUser.name || currentUser.username || '';
-  const ne = prompt('اكتب الاسم اللي تحبّ يظهر للناس (مش اسم المستخدم):', cur);
-  if (ne === null) return;
-  const n = ne.trim();
-  if (!n) { showToast('⚠️ الاسم مش ممكن يكون فاضي'); return; }
-  if (n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
-  currentUser.name = n;
-  window.currentUser = currentUser;
+  const el = document.getElementById('userNameDisplay');
+  if (!el) return;
+  // ★ inline input بدل prompt — بيشتغل على كل الأجهزة
+  const _safeN = cur.replace(/"/g,'&quot;');
+  el.innerHTML = '<span style="display:flex;align-items:center;gap:4px;flex-wrap:nowrap;">'
+    + '<input id="_nameEditInput" type="text" value="' + _safeN + '" maxlength="30"'
+    + ' style="background:rgba(201,151,58,0.12);border:1.5px solid rgba(201,151,58,0.5);border-radius:8px;padding:4px 8px;font-family:Cairo,sans-serif;font-size:13px;color:var(--gold);direction:rtl;outline:none;width:140px;"'
+    + '>'  // onkeydown via addEventListener
+    + '<button onclick="_saveNameEdit()" style="background:rgba(46,175,120,0.2);border:1px solid rgba(46,175,120,0.4);border-radius:6px;padding:3px 7px;color:#7DFFC9;font-size:12px;cursor:pointer;flex-shrink:0;">✓</button>'
+    + '<button onclick="_cancelNameEdit()" style="background:rgba(255,100,100,0.1);border:1px solid rgba(255,100,100,0.3);border-radius:6px;padding:3px 7px;color:#FF9E9E;font-size:12px;cursor:pointer;flex-shrink:0;">✕</button>'
+    + '</span>';
+  const inp = document.getElementById('_nameEditInput');
+  if (inp) { inp.focus(); inp.select(); inp.addEventListener('keydown', function(ev){ if(ev.key==="Enter") _saveNameEdit(); if(ev.key==="Escape") _cancelNameEdit(); }); }
+}
+function _saveNameEdit() {
+  const inp = document.getElementById('_nameEditInput');
+  if (!inp) return;
+  const n = inp.value.trim();
+  if (!n || n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
+  currentUser.name = n; window.currentUser = currentUser;
   saveCurrentUser();
-  // ★ حفظ الاسم الجديد في Firebase
-  if (typeof window.fbSaveUser === 'function') {
-    window.fbSaveUser(currentUser.username, {
-      totalHasanat: currentUser.totalHasanat || 0,
-      totalScore:   currentUser.totalScore   || 0,
-      totalGames:   currentUser.totalGames   || 0,
-      isGuest:      false,
-      name:         n,
-    });
-  }
-  if (typeof window.fbSaveFullUserData === 'function') {
-    window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n, updatedAt: Date.now() });
-  }
+  if (typeof window.fbSaveUser === 'function') window.fbSaveUser(currentUser.username, { totalHasanat: currentUser.totalHasanat||0, totalScore: currentUser.totalScore||0, totalGames: currentUser.totalGames||0, isGuest: false, name: n });
+  if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n, updatedAt: Date.now() });
   const el = document.getElementById('userNameDisplay');
   if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
-  showToast('✅ تم تغيير اسمك إلى: ' + n);
+  showToast('✅ تم تغيير الاسم: ' + n);
   if (typeof renderLeaderboard === 'function') renderLeaderboard();
 }
+function _cancelNameEdit() {
+  const n = currentUser.name || currentUser.username || '';
+  const el = document.getElementById('userNameDisplay');
+  if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
+}
+window.editDisplayName = editDisplayName;
+window._saveNameEdit = _saveNameEdit;
+window._cancelNameEdit = _cancelNameEdit;
 // ★ حذف الحساب نهائياً
 async function doDeleteAccount() {
   if (!currentUser || currentUser.isGuest) return;
@@ -4031,7 +4071,15 @@ function lbRestGoTo(idx) {
 // ============================================================
 // ===== QUESTION COUNT =====
 // ============================================================
-let selectedQCount = 50;
+let selectedQCount = 15;
+let _defaultQCount = 15; // ★ العدد الأصلي قبل اختيار سورة/جزء
+
+function setQCount(val) {
+  selectedQCount = parseInt(val);
+  document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
+  // ★ لو مفيش سورة/جزء مختار → احفظ العدد كـ default
+  if (!selectedSurah && !selectedJuz) _defaultQCount = selectedQCount;
+}
 
 function onQcountChange(val) {
   selectedQCount = parseInt(val);
@@ -4924,6 +4972,9 @@ function clearJuzFilter(silent=false) {
     _hideDualSlider();
     const lbl2 = document.getElementById('qcountLabelText');
     if (lbl2) lbl2.textContent = 'اختر عدد الأسئلة في كل جلسة';
+    // ★ رجّع عدد الأسئلة للـ default
+    selectedQCount = _defaultQCount;
+    document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
   }
 }
 
@@ -5065,6 +5116,11 @@ function clearSurahFilter() {
   const lbl = document.getElementById('surahDropdownLabel');
   if (lbl) lbl.textContent = '🌿 كل السور (عشوائي)';
   document.getElementById('surahHint').textContent = '';
+  // ★ رجّع عدد الأسئلة للـ default (قبل ما تختار السورة)
+  selectedQCount = _defaultQCount;
+  document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
+  const lbl2 = document.getElementById('qcountLabelText');
+  if (lbl2) lbl2.textContent = 'اختر عدد الأسئلة في كل جلسة';
   updateQcountSliderMax();
   _hideDualSlider();
 }
@@ -8534,9 +8590,13 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
   if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
     const _room = window._multiRoomCache;
     if (!_room || _room.currentQ === undefined || _room.currentQ === multiState.qIndex) {
-      window.fbMulti.updateRoom(multiState.roomCode, { currentQ: _nextQ });
+      // ★ لو آخر سؤال — اكتب finished فوراً عشان ما يحصلش تأخير
+      if (_nextQ >= multiState.totalQ) {
+        window.fbMulti.updateRoom(multiState.roomCode, { currentQ: _nextQ, phase: 'finished' }).catch(() => {});
+      } else {
+        window.fbMulti.updateRoom(multiState.roomCode, { currentQ: _nextQ });
+      }
     }
-    // اللاعب اللي أجاب يتحرك بعد 700ms للـ feedback — التانيين هيتحركوا عبر onValue فوراً
     multiState.answerTimer = setTimeout(() => {
       if (multiState.qIndex < _nextQ) {
         clearInterval(multiState.questionTimer);
@@ -8997,13 +9057,19 @@ function _startPolling() {
         }
       } else if (multiState.phase === 'playing') {
         _updateMultiLiveScores();
+        // ★ لو الغرفة انتهت (finished) → اعرض النتائج فوراً
+        if (room.phase === 'finished' && multiState.phase === 'playing') {
+          clearTimeout(multiState.answerTimer);
+          clearInterval(multiState.questionTimer);
+          _showMultiResults();
+          return;
+        }
         // sync السؤال — لو currentQ في Firebase أكبر من اللي عندنا محلياً انتقل فوراً
         const serverQ = room.currentQ;
         if (typeof serverQ === 'number' && serverQ > multiState.qIndex) {
           clearTimeout(multiState.answerTimer);
           clearInterval(multiState.questionTimer);
           multiState.qIndex = serverQ;
-          // reset حالة اللاعب للسؤال الجديد
           const pk2 = multiState.playerKey || multiState.playerName;
           window.fbMulti.updatePlayer(multiState.roomCode, pk2, { answered: false });
           if (multiState.qIndex >= multiState.totalQ) {
@@ -9013,22 +9079,28 @@ function _startPolling() {
           }
         }
       } else if (multiState.phase === 'results') {
-        // ★ "مرة تانية" أوتوماتيك: المضيف بدأ جولة جديدة فورًا (playing) → ادخل اللعبة فورًا بالأسئلة الجديدة
+        // ★ "مرة تانية" أوتوماتيك: المضيف بدأ جولة جديدة → ادخل اللعبة فوراً
         if (room.phase === 'playing' && !multiState.isHost) {
           clearTimeout(multiState.answerTimer);
           clearInterval(multiState.questionTimer);
           multiState.phase = 'playing';
           multiState.myScore = 0;
+          multiState._peakScore = 0; // ★ مهم: رست من اللعبة السابقة
           multiState.qIndex = 0;
           multiState._scoreSavedThisRound = false;
-          multiState.questions = (room.questions || []).map(window._expandMultiQ); // ★ نتأكد إنها موسّعة (مش مضغوطة جاية من Firebase)
-          multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
+          window._prevMultiScores = {};
+          // خذ الأسئلة من Firebase (الجديدة)
+          if (room.questions && room.questions.length) {
+            multiState.questions = room.questions.map(window._expandMultiQ || (q => q));
+            multiState.totalQ = room.totalQ || room.questions.length;
+          }
           multiState.qTime = room.qTime || multiState.qTime || 15;
           document.getElementById('multiResults').style.display = 'none';
           document.getElementById('multiWaiting').style.display = 'none';
           document.getElementById('multiGameArea').style.display = 'block';
+          document.getElementById('multiMyScore').textContent = toArabicNum(0);
           const _qt = document.getElementById('multiQTotal'); if (_qt) _qt.textContent = toArabicNum(multiState.totalQ);
-          showToast('🔄 جولة جديدة بدأت — يلا!');
+          showToast('🔄 جولة جديدة — يلا!');
           _renderMultiQuestion();
         } else if (room.phase === 'waiting') {
           // (احتياطي) المضيف رجّع الغرفة لـ waiting بنفس الإعدادات → رجّع اللاعب لقاعة الانتظار
