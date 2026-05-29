@@ -1122,7 +1122,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getDatabase, ref, set, remove, onValue, get, update, onDisconnect, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, FacebookAuthProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, FacebookAuthProvider, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDDod7rBSs6Oa71JufQye6PUkUHZ7iZCVk",
@@ -1186,50 +1186,55 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   function toFbEmail(email) { return email.trim().toLowerCase(); }
   function padPass(p) { return p + '__nr'; }
 
-  // ★ تسجيل الدخول بـ Facebook
-  window.fbFacebookSignIn = function(onSuccess, onError) {
-    const provider = new FacebookAuthProvider();
-    signInWithPopup(auth, provider)
-      .then((result) => {
-        const gUser = result.user;
-        const email = (gUser.email || '').toLowerCase();
-        const name  = gUser.displayName || email.split('@')[0];
-        onSuccess && onSuccess({ email: email || (gUser.uid + '@facebook.com'), name });
-      })
-      .catch(e => {
-        if (e.code === 'auth/popup-closed-by-user') return;
-        onError && onError(e.code);
-      });
-  };
-
-  // ★ إعادة تعيين كلمة المرور — Firebase بيبعت الرسالة للإيميل
+  // ★ إعادة تعيين كلمة المرور — Firebase بيبعت رسالة للإيميل الحقيقي
   window.fbResetPassword = function(email, onSuccess, onError) {
     sendPasswordResetEmail(auth, email.trim().toLowerCase())
       .then(() => onSuccess && onSuccess())
       .catch(e => onError && onError(e.code));
   };
 
-  // ★ تسجيل الدخول بـ Google
+  // ★ Google — redirect (أشغل على موبايل وGitHub Pages)
   window.fbGoogleSignIn = function(onSuccess, onError) {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
-    signInWithPopup(auth, provider)
-      .then((result) => {
-        const gUser   = result.user;
-        const email   = (gUser.email || '').toLowerCase();
-        const name    = gUser.displayName || email.split('@')[0];
-        const photoURL = gUser.photoURL || '';
-        onSuccess && onSuccess({ email, name, photoURL });
-      })
-      .catch(e => {
-        if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
-        if (e.code === 'auth/popup-blocked') {
-          onError && onError('auth/popup-blocked');
-          return;
-        }
-        onError && onError(e.code);
-      });
+    signInWithRedirect(auth, provider).catch(e => onError && onError(e.code));
   };
+
+  // ★ Facebook — redirect
+  window.fbFacebookSignIn = function(onSuccess, onError) {
+    const provider = new FacebookAuthProvider();
+    signInWithRedirect(auth, provider).catch(e => onError && onError(e.code));
+  };
+
+  // ★ معالجة نتيجة الـ redirect لما يرجع المستخدم
+  getRedirectResult(auth).then((result) => {
+    if (!result || !result.user) return;
+    const gUser  = result.user;
+    const email  = (gUser.email || '').toLowerCase();
+    const name   = gUser.displayName || email.split('@')[0];
+    if (!email) return;
+    const _doLogin = () => {
+      const users = getUsers ? getUsers() : {};
+      let userData = users[email] || null;
+      if (!userData) { userData = (typeof createDefaultUserData === 'function') ? createDefaultUserData() : {}; }
+      userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
+      try {
+        const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        _u[email] = userData; localStorage.setItem('nour_users', JSON.stringify(_u));
+      } catch(e) {}
+      if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false });
+      const ls = document.getElementById('loginScreen');
+      if (ls) ls.classList.add('hide');
+      if (typeof loginSuccess === 'function') loginSuccess(email, userData);
+    };
+    if (typeof loginSuccess === 'function') { _doLogin(); }
+    else { window._pendingRedirectUser = { email, name }; }
+  }).catch(e => {
+    if (e && e.code && e.code !== 'auth/no-redirect-operation' && e.code !== 'auth/redirect-cancelled-by-user') {
+      console.warn('Redirect result error:', e.code);
+    }
+  });
 
   window.fbRegister = function(email, password, onSuccess, onError) {
     const fbEmail = toFbEmail(email);
@@ -3246,86 +3251,38 @@ function doRegister() {
   _tryRegister(0);
 }
 
-// ★ تسجيل الدخول بـ Google — بضغطة واحدة
+// ★ تسجيل الدخول بـ Google (redirect — أموثق على موبايل)
 function doGoogleSignIn() {
   const btn = document.getElementById('googleSignInBtn');
-  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; }
-  const _restore = () => { if (btn) { btn.disabled = false; btn.style.opacity = '1'; } };
-  if (typeof window.fbGoogleSignIn !== 'function') { _restore(); showLoginErr('جاري التحميل — حاول ثانية'); return; }
-  window.fbGoogleSignIn(({ email, name, photoURL }) => {
-    _restore();
-    currentUser = null; window.currentUser = null;
-    const users = getUsers();
-    let userData = users[email] || null;
-    if (!userData) {
-      userData = createDefaultUserData();
-    }
-    // ★ دايمًا نحدّث الاسم من Google — هو المصدر الأصح
-    userData.name     = name || userData.name || email.split('@')[0];
-    userData.email    = email;
-    userData.username = email;
-    userData.isGuest  = false;
-    // احفظ محلياً
-    try {
-      const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-      _u[email] = userData;
-      localStorage.setItem('nour_users', JSON.stringify(_u));
-    } catch(e) {}
-    // احفظ في Firebase
-    if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
-    if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false });
-    // ادخل
-    document.getElementById('loginScreen').classList.add('hide');
-    loginSuccess(email, userData);
-  }, (code) => {
-    _restore();
-    if (code === 'auth/unauthorized-domain') {
-      showLoginErr('⚠️ لازم تضيف الدومين في Firebase:\nAuthentication → Settings → Authorized domains → Add domain:\nnourquranofficial.github.io');
-    } else if (code === 'auth/operation-not-allowed') {
-      showLoginErr('⚠️ Google غير مفعّل — Firebase → Authentication → Sign-in method → Google → Enable + اختار Support Email');
-    } else if (code === 'auth/popup-blocked') {
-      showLoginErr('⚠️ المتصفح حجب الـ Popup — اسمح بالـ popups لهذا الموقع وحاول تاني');
-    } else if (code === 'auth/network-request-failed') {
-      showLoginErr('⚠️ مشكلة في الإنترنت — تأكد من الاتصال وحاول تاني');
-    } else if (code) {
-      showLoginErr('خطأ: ' + code);
-    }
-  });
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري...'; }
+  if (typeof window.fbGoogleSignIn === 'function') {
+    window.fbGoogleSignIn(null, (code) => {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="17" height="17" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.2l6.7-6.7C35.8 2.5 30.2 0 24 0 14.6 0 6.6 5.6 2.8 13.7l7.8 6C12.4 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.5 2.8-2.2 5.2-4.7 6.8l7.4 5.7c4.3-4 6.8-9.9 6.8-16.5z"/><path fill="#FBBC05" d="M10.6 28.3A14.5 14.5 0 0 1 9.5 24c0-1.5.3-3 .7-4.3l-7.8-6A23.9 23.9 0 0 0 0 24c0 3.9.9 7.5 2.8 10.7l7.8-6.4z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.5l-7.4-5.7c-2 1.4-4.6 2.2-7.8 2.2-6.1 0-11.3-4.1-13.2-9.7l-7.8 6.4C6.6 42.4 14.6 48 24 48z"/></svg> Google'; }
+      if (code === 'auth/unauthorized-domain') showLoginErr('⚠️ أضف nourquranofficial.github.io في Firebase → Authentication → Settings → Authorized domains');
+      else if (code === 'auth/operation-not-allowed') showLoginErr('⚠️ فعّل Google في Firebase → Authentication → Sign-in method → Google');
+      else if (code) showLoginErr('خطأ Google: ' + code);
+    });
+  } else {
+    showLoginErr('⏳ جاري التحميل — حاول تاني');
+    if (btn) { btn.disabled = false; }
+  }
 }
 window.doGoogleSignIn = doGoogleSignIn;
 
-// ★ تسجيل الدخول بـ Facebook
+// ★ تسجيل الدخول بـ Facebook (redirect)
 function doFacebookSignIn() {
   const btn = document.getElementById('facebookSignInBtn');
-  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; }
-  const _restore = () => { if (btn) { btn.disabled = false; btn.style.opacity = '1'; } };
-  if (typeof window.fbFacebookSignIn !== 'function') { _restore(); showLoginErr('جاري التحميل — حاول ثانية'); return; }
-  window.fbFacebookSignIn(({ email, name }) => {
-    _restore();
-    if (!email) { showLoginErr('Facebook لم يرسل الإيميل — تأكد من إعدادات التطبيق'); return; }
-    currentUser = null; window.currentUser = null;
-    const users = getUsers();
-    let userData = users[email] || null;
-    if (!userData) {
-      userData = createDefaultUserData();
-      userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
-      if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
-      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, { ...userData, isGuest: false, name });
-    } else { if (name && !userData.name) userData.name = name; }
-    try {
-      const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-      _u[email] = userData;
-      localStorage.setItem('nour_users', JSON.stringify(_u));
-    } catch(e) {}
-    document.getElementById('loginScreen').classList.add('hide');
-    loginSuccess(email, userData);
-  }, (code) => {
-    _restore();
-    if (code === 'auth/account-exists-with-different-credential')
-      showLoginErr('الإيميل ده مسجّل بطريقة تانية (Google أو إيميل)');
-    else if (code)
-      showLoginErr('فشل الدخول بـ Facebook: ' + code);
-  });
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري...'; }
+  if (typeof window.fbFacebookSignIn === 'function') {
+    window.fbFacebookSignIn(null, (code) => {
+      if (btn) { btn.disabled = false; btn.textContent = 'Facebook'; }
+      if (code === 'auth/operation-not-allowed') showLoginErr('⚠️ فعّل Facebook في Firebase → Authentication → Sign-in method');
+      else if (code) showLoginErr('خطأ Facebook: ' + code);
+    });
+  } else {
+    showLoginErr('⏳ جاري التحميل — حاول تاني');
+    if (btn) btn.disabled = false;
+  }
 }
 window.doFacebookSignIn = doFacebookSignIn;
 
@@ -3428,6 +3385,7 @@ function editDisplayName() {
   currentUser.name = n;
   window.currentUser = currentUser;
   saveCurrentUser();
+  // ★ حفظ الاسم الجديد في Firebase
   if (typeof window.fbSaveUser === 'function') {
     window.fbSaveUser(currentUser.username, {
       totalHasanat: currentUser.totalHasanat || 0,
@@ -3438,7 +3396,7 @@ function editDisplayName() {
     });
   }
   if (typeof window.fbSaveFullUserData === 'function') {
-    window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n });
+    window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n, updatedAt: Date.now() });
   }
   const el = document.getElementById('userNameDisplay');
   if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
@@ -3521,6 +3479,8 @@ function saveCurrentUser() {
   const users = getUsers();
   users[currentUser.username] = {
     ...(users[currentUser.username] || {}),
+    name:         currentUser.name || '',
+    email:        currentUser.email || currentUser.username,
     totalScore:   currentUser.totalScore,
     totalGames:   currentUser.totalGames,
     totalHasanat: currentUser.totalHasanat,
