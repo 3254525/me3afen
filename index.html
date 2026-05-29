@@ -1142,7 +1142,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getDatabase, ref, set, remove, onValue, get, update, onDisconnect, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, FacebookAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, sendPasswordResetEmail, GoogleAuthProvider, FacebookAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, fetchSignInMethodsForEmail, verifyPasswordResetCode, confirmPasswordReset } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDDod7rBSs6Oa71JufQye6PUkUHZ7iZCVk",
@@ -1206,15 +1206,35 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   function toFbEmail(email) { return email.trim().toLowerCase(); }
   function padPass(p) { return p + '__nr'; }
 
-  // ★ إعادة تعيين كلمة المرور — مع رجوع للتطبيق بعد الإعادة
+  // ★ إعادة تعيين كلمة المرور — اللينك يفتح التطبيق مباشرة
   window.fbResetPassword = function(email, onSuccess, onError) {
     const actionSettings = {
       url: 'https://nourquranofficial.github.io/nour/',
-      handleCodeInApp: false,
+      handleCodeInApp: true,
     };
     sendPasswordResetEmail(auth, email.trim().toLowerCase(), actionSettings)
       .then(() => onSuccess && onSuccess())
       .catch(e => onError && onError(e.code));
+  };
+
+  // ★ معالجة reset code لما يفتح التطبيق من اللينك
+  window.fbHandleResetCode = function(oobCode, onValid, onError) {
+    verifyPasswordResetCode(auth, oobCode)
+      .then(email => onValid && onValid(email))
+      .catch(e => onError && onError(e.code));
+  };
+  window.fbConfirmReset = function(oobCode, newPass, email, onSuccess, onError) {
+    confirmPasswordReset(auth, oobCode, newPass + '__nr')
+      .then(() => signInWithEmailAndPassword(auth, email, newPass + '__nr'))
+      .then(() => onSuccess && onSuccess(email))
+      .catch(e => onError && onError(e.code));
+  };
+
+  // ★ فحص نوع الحساب (Google / email)
+  window.fbCheckSignInMethods = function(email, cb) {
+    fetchSignInMethodsForEmail(auth, email.trim().toLowerCase())
+      .then(methods => cb && cb(methods))
+      .catch(() => cb && cb([]));
   };
 
   // ★ Google — popup صغير زي ما بتكون عادي
@@ -1983,6 +2003,30 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     set(ref(db, 'users/' + key + '/data'), {
       totalScore: 0, totalGames: 0, totalHasanat: 0, streak: 0, lastPlay: null, updatedAt: Date.now()
     }).catch(() => {});
+  };
+
+  // ★ تصفير لوحة الشرف بـ set() مباشرة (يتجاوز الـMAX)
+  window.fbResetLeaderboard = function(username, isGuest) {
+    if (!username) return;
+    const key = isGuest ? makeKey(username, true) : dataKey(username);
+    set(ref(db, LB_PATH + key), {
+      name: username,
+      totalScore: 0, totalGames: 0, totalHasanat: 0,
+      isGuest: isGuest || false,
+      updatedAt: Date.now(),
+    }).catch(() => {});
+  };
+
+  // ★ مسح كل بيانات المستخدم من Firebase نهائياً
+  window.fbDeleteAllUserData = function(username) {
+    if (!username) return;
+    const key = dataKey(username);
+    const lbKey = makeKey(username, false);
+    // مسح بيانات المستخدم
+    remove(ref(db, 'users/' + key)).catch(() => {});
+    // مسح من لوحة الشرف
+    remove(ref(db, LB_PATH + lbKey)).catch(() => {});
+    remove(ref(db, LB_PATH + 'guest__' + lbKey)).catch(() => {});
   };
   // (نسخة قديمة محفوظة للرجوع لو لزم)
   window._fbSaveUserOld = function(username, data) {
@@ -3367,23 +3411,15 @@ function doForgotPassword() {
 }
 
 function _sendResetEmail(email) {
-  const now = Date.now();
-  if (_resetCooldown && now < _resetCooldown) {
-    const secs = Math.ceil((_resetCooldown - now) / 1000);
-    showLoginErr(`⏳ انتظر ${secs} ثانية`);
-    return;
-  }
   showLoginErr('⏳ جاري الإرسال...');
   if (typeof window.fbResetPassword === 'function') {
     window.fbResetPassword(email,
       () => {
-        _resetCooldown = Date.now() + 60000;
         showLoginErr('✅ تم! افتح بريدك ودوس الرابط — بعدها ارجع وادخل بالباسورد الجديد');
       },
       (code) => {
         if (code === 'auth/too-many-requests') {
-          _resetCooldown = Date.now() + 120000;
-          showLoginErr('⏳ انتظر دقيقتين وحاول تاني');
+          showLoginErr('⏳ انتظر قليلاً وحاول تاني');
         } else if (code === 'auth/user-not-found' || code === 'auth/invalid-email') {
           showLoginErr('❌ مفيش حساب بالإيميل ده');
         } else {
@@ -3394,6 +3430,73 @@ function _sendResetEmail(email) {
   }
 }
 window.doForgotPassword = doForgotPassword;
+
+// ★ معالجة اللينك لما يفتح التطبيق من إيميل الـ reset
+(function _checkResetLink() {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get('mode');
+  const oobCode = params.get('oobCode');
+  if (mode !== 'resetPassword' || !oobCode) return;
+
+  // نشيل الـ params من الـ URL عشان ما يتشافوش
+  window.history.replaceState({}, '', window.location.pathname);
+  window._resetOobCode = oobCode;
+
+  // نتحقق من صلاحية الكود
+  const _tryOpen = () => {
+    if (typeof window.fbHandleResetCode !== 'function') {
+      setTimeout(_tryOpen, 500); return;
+    }
+    window.fbHandleResetCode(oobCode, (email) => {
+      // الكود صالح — اعرض الموديل
+      const modal = document.getElementById('resetPassModal');
+      const emailEl = document.getElementById('resetPassEmail');
+      if (emailEl) emailEl.textContent = email;
+      window._resetEmail = email;
+      if (modal) { modal.style.display = 'flex'; }
+      // أخفي شاشة الدخول لو ظاهرة
+      const ls = document.getElementById('loginScreen');
+      if (ls) ls.classList.add('hide');
+    }, (code) => {
+      alert('الرابط منتهي الصلاحية أو مستخدم قبل كده — اطلب رابط جديد.');
+    });
+  };
+  _tryOpen();
+})();
+
+// ★ تأكيد الباسورد الجديد والدخول أوتوماتيك
+function doConfirmReset() {
+  const pass  = document.getElementById('resetNewPass').value;
+  const pass2 = document.getElementById('resetNewPass2').value;
+  const errEl = document.getElementById('resetPassErr');
+  if (!pass || pass.length < 6) { errEl.textContent = '⚠️ الباسورد لازم ٦ أحرف على الأقل'; return; }
+  if (pass !== pass2) { errEl.textContent = '⚠️ الباسوردين مش متطابقين'; return; }
+  errEl.textContent = '⏳ جاري الحفظ...';
+  const oobCode = window._resetOobCode;
+  const email   = window._resetEmail;
+  if (!oobCode || !email) { errEl.textContent = '❌ خطأ — اطلب رابط جديد'; return; }
+  if (typeof window.fbConfirmReset === 'function') {
+    window.fbConfirmReset(oobCode, pass, email, (userEmail) => {
+      // حفظ محلي
+      try {
+        const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        if (!_u[userEmail]) _u[userEmail] = {};
+        _u[userEmail].password = btoa(pass);
+        localStorage.setItem('nour_users', JSON.stringify(_u));
+      } catch(e) {}
+      // أغلق الموديل وادخل
+      const modal = document.getElementById('resetPassModal');
+      if (modal) modal.style.display = 'none';
+      // loginSuccess هيشتغل من onAuthStateChanged تلقائياً
+      showToast('✅ تم تغيير الباسورد والدخول!');
+    }, (code) => {
+      if (code === 'auth/expired-action-code') errEl.textContent = '❌ الرابط انتهت صلاحيته — اطلب رابط جديد';
+      else if (code === 'auth/weak-password') errEl.textContent = '⚠️ الباسورد ضعيف — ٦ أحرف على الأقل';
+      else errEl.textContent = '❌ مشكلة: ' + code;
+    });
+  }
+}
+window.doConfirmReset = doConfirmReset;
 
 // ★ رجوع سريع من وضع الضيف لحساب اللاعب المحفوظ بدوسة واحدة
 function _switchBackToSaved() {
@@ -3490,40 +3593,19 @@ function editDisplayName() {
 async function doDeleteAccount() {
   if (!currentUser || currentUser.isGuest) return;
   const name = currentUser.name || currentUser.username || 'حسابك';
-  // تأكيد مزدوج
   const c1 = confirm(`⚠️ هتحذف ${name} نهائياً — النقاط والبيانات كلها هتتمسح.\n\nمتأكد؟`);
   if (!c1) return;
   const c2 = confirm('❗ مفيش رجوع بعد الحذف — اضغط موافق للتأكيد.');
   if (!c2) return;
 
   const username = currentUser.username;
-  try {
-    // ١. مسح من Firebase Database
-    if (typeof window.fbMulti !== 'undefined' || typeof ref !== 'undefined') {
-      try {
-        const { ref, remove } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
-        const { getDatabase } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
-      } catch(e) {}
-    }
-    // مسح بيانات المستخدم من Firebase (عبر الدوال المتاحة)
-    if (typeof window.fbSaveFullUserData === 'function') {
-      // نكتب بيانات فارغة — الحذف الحقيقي يتم عبر Firebase Auth
-      window.fbSaveFullUserData(username, { deleted: true, deletedAt: Date.now() });
-    }
-    // ٢. مسح من Firebase Auth
-    const { getAuth, deleteUser } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
-    const _auth = getAuth();
-    if (_auth.currentUser) {
-      await deleteUser(_auth.currentUser);
-    }
-  } catch(e) {
-    if (e.code === 'auth/requires-recent-login') {
-      alert('لأمانك، لازم تدخل تاني وبعدين تحذف الحساب.\n\nالتطبيق هيطلع — ادخل تاني وحاول مرة ثانية.');
-      doLogout();
-      return;
-    }
+
+  // ١. مسح كل البيانات من Firebase Database فوراً
+  if (typeof window.fbDeleteAllUserData === 'function') {
+    window.fbDeleteAllUserData(username);
   }
-  // ٣. مسح localStorage
+
+  // ٢. مسح localStorage
   try {
     const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
     delete users[username];
@@ -3531,8 +3613,22 @@ async function doDeleteAccount() {
     localStorage.removeItem('nour_last_user');
     localStorage.removeItem('nour_current_user');
   } catch(e) {}
+
+  // ٣. مسح من Firebase Auth
+  try {
+    const { getAuth, deleteUser } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
+    const _auth = getAuth();
+    if (_auth.currentUser) await deleteUser(_auth.currentUser);
+  } catch(e) {
+    if (e.code === 'auth/requires-recent-login') {
+      alert('لأمانك، ادخل تاني وبعدين احذف الحساب.');
+      doLogout();
+      return;
+    }
+  }
+
   currentUser = null; window.currentUser = null;
-  alert('✅ تم حذف الحساب.');
+  alert('✅ تم حذف الحساب نهائياً.');
   location.reload();
 }
 window.doDeleteAccount = doDeleteAccount;
@@ -6199,6 +6295,8 @@ function showResults() {
   const _localUsers = getUsers();
   _localUsers[currentUser.username] = {
     ...(_localUsers[currentUser.username] || {}),
+    name:         currentUser.name || '',
+    email:        currentUser.email || currentUser.username,
     totalScore:   currentUser.totalScore,
     totalGames:   currentUser.totalGames,
     totalHasanat: currentUser.totalHasanat,
@@ -6306,12 +6404,9 @@ function resetScore() {
       saveUsers(users);
     }
     saveCurrentUser();
-    // Firebase — التصفير يتوحّد: نكتب 0 بوقت أحدث (الأحدث يكسب) فيتبنّاه باقي الأجهزة
-    if (typeof window.fbSaveUser === 'function') {
-      window.fbSaveUser(currentUser.username, {
-        totalHasanat: 0, totalScore: 0, totalGames: 0,
-        isGuest: currentUser.isGuest || false, updatedAt: _ts,
-      });
+    // Firebase — تصفير مباشر بـ set() يتجاوز الـMAX في اللوحة
+    if (typeof window.fbResetLeaderboard === 'function') {
+      window.fbResetLeaderboard(currentUser.username, currentUser.isGuest || false);
     }
     // امسح بيانات الحساب السحابية كمان (للمسجّلين)
     if (!currentUser.isGuest && typeof window.fbResetUserData === 'function') {
@@ -8522,22 +8617,20 @@ function _updateMultiLiveScores() {
 function _showMultiResults() {
   clearTimeout(multiState.answerTimer);
   clearInterval(multiState.questionTimer);
-  // ★ مانوقفش الاستماع للغرفة — نسيبه شغّال عشان لو المضيف بدأ جولة جديدة (مرة تانية)
-  //   كل اللاعبين يرجعوا معاه لقاعة الانتظار تلقائياً. (قبل كده كان _stopPolling بيفصلهم)
   multiState.phase = 'results';
 
   const pk = multiState.playerKey || multiState.playerName;
   const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
+
+  // ★★ احسب النقطة الحقيقية أولاً — قبل أي كتابة على Firebase
+  const _trueScore = Math.max(multiState.myScore || 0, multiState._peakScore || 0);
+
   if (typeof window.fbMulti !== 'undefined') {
-    // ★★ الحل الجذري: نكتب النقطة النهائية في finalScores جوّا الغرفة
-    //    محدش بيكتب على المسار ده ومحدش بيمسحه. ضمانة مطلقة إن النقاط بتظهر صح.
     if (typeof window.fbMulti.saveFinalScore === 'function') {
       const _saveDedicated = (attempt) => {
-        const p = window.fbMulti.saveFinalScore(multiState.roomCode, pk, multiState.myScore || 0, _myFinalName);
+        const p = window.fbMulti.saveFinalScore(multiState.roomCode, pk, _trueScore, _myFinalName);
         if (p && p.catch) {
-          p.catch(() => {
-            if (attempt < 4) setTimeout(() => _saveDedicated(attempt + 1), 400 * attempt);
-          });
+          p.catch(() => { if (attempt < 4) setTimeout(() => _saveDedicated(attempt + 1), 400 * attempt); });
         }
       };
       _saveDedicated(1);
@@ -8545,35 +8638,31 @@ function _showMultiResults() {
       setTimeout(() => _saveDedicated(1), 4000);
     }
 
-    // ★ كمان نكتب في room.players كـbackup (الطريقة القديمة)
     const _finalScore = {
-      score: multiState.myScore,
-      done: true,
-      lastSeen: Date.now(),
-      finalScore: multiState.myScore,
-      finalName: _myFinalName,
+      score:      _trueScore,
+      done:       true,
+      lastSeen:   Date.now(),
+      finalScore: _trueScore,
+      finalName:  _myFinalName,
     };
     const _writeFinal = (attempt) => {
       const p = window.fbMulti.updatePlayer(multiState.roomCode, pk, _finalScore);
       if (p && p.catch) {
-        p.catch(() => {
-          if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt);
-        });
+        p.catch(() => { if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt); });
       }
     };
     _writeFinal(1);
     setTimeout(() => _writeFinal(1), 2000);
     setTimeout(() => _writeFinal(1), 5000);
-    // ★ المضيف يعلّم الغرفة "انتهت" — عشان أي لاعب يرجع لقاعة الانتظار ما يترجعش للعبة القديمة
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
     }
   } else {
     const room = _getRoomData(multiState.roomCode);
     if (room && room.players && room.players[pk]) {
-      room.players[pk].score = multiState.myScore;
-      room.players[pk].finalScore = multiState.myScore;
-      room.players[pk].done = true;
+      room.players[pk].score      = _trueScore;
+      room.players[pk].finalScore = _trueScore;
+      room.players[pk].done       = true;
       if (multiState.isHost) room.phase = 'finished';
       _setRoomData(multiState.roomCode, room);
     }
@@ -8626,15 +8715,14 @@ function _showMultiResults() {
 
   const finalRoom = window._multiRoomCache;
   const players = finalRoom ? { ...(finalRoom.players || {}) } : {};
-  // ★★ أعلى نقطة وصلها اللاعب فعلاً — من myScore أو من _peakScore (مش بترست)
-  const _myTrueScore = Math.max(multiState.myScore || 0, multiState._peakScore || 0);
+  // ★ _trueScore محسوب فوق — نستخدمه هنا للعرض
   if (pk) {
     const _prev = players[pk] || {};
     players[pk] = {
       ..._prev,
-      name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'أنت') : _bestName(_prev),
-      finalScore: Math.max(_bestScore(_prev), _myTrueScore),
-      score:      Math.max(_bestScore(_prev), _myTrueScore),
+      name:       _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'أنت') : _bestName(_prev),
+      finalScore: Math.max(_bestScore(_prev), _trueScore),
+      score:      Math.max(_bestScore(_prev), _trueScore),
     };
   }
   // سجّل أعلى قيمة لكل لاعب (monotonic)
@@ -8690,8 +8778,8 @@ function _showMultiResults() {
             freshPlayers[pk] = {
               ..._prev,
               name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
-              finalScore: Math.max(_bestScore(_prev), _myTrueScore),
-              score:      Math.max(_bestScore(_prev), _myTrueScore),
+              finalScore: Math.max(_bestScore(_prev), _trueScore),
+              score:      Math.max(_bestScore(_prev), _trueScore),
             };
           }
           const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
@@ -9011,6 +9099,25 @@ function _stopPolling() {
       <button id="confirmNo" onclick="closeConfirm()" style="flex:1;padding:12px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:12px;color:rgba(245,217,139,0.6);font-family:'Cairo',sans-serif;font-size:15px;font-weight:600;cursor:pointer;">لأ</button>
       <button id="confirmYes" style="flex:1;padding:12px;background:linear-gradient(135deg,#C0392B,#E74C3C);border:none;border-radius:12px;color:white;font-family:'Cairo',sans-serif;font-size:15px;font-weight:700;cursor:pointer;">تصفير</button>
     </div>
+  </div>
+</div>
+
+<!-- ★ موديل إعادة تعيين كلمة المرور (من اللينك) -->
+<div id="resetPassModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;">
+  <div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.4);border-radius:20px;padding:32px 24px;max-width:340px;width:92%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.7);">
+    <div style="font-size:36px;margin-bottom:8px;">🔑</div>
+    <div style="font-size:18px;font-weight:700;color:var(--gold);font-family:'Cairo',sans-serif;margin-bottom:4px;">باسورد جديد</div>
+    <div id="resetPassEmail" style="font-size:12px;color:rgba(245,217,139,0.5);margin-bottom:20px;direction:ltr;"></div>
+    <div class="pw-wrap" style="margin-bottom:12px;">
+      <input type="password" id="resetNewPass" placeholder="باسورد جديد (٦ أحرف على الأقل)" style="width:100%;background:rgba(255,254,249,0.06);border:1.5px solid rgba(201,151,58,0.3);border-radius:12px;padding:12px 16px 12px 36px;font-family:'Cairo',sans-serif;font-size:15px;color:#FDF8EE;direction:rtl;outline:none;">
+      <button type="button" class="pw-eye" onclick="togglePw('resetNewPass',this)">👁</button>
+    </div>
+    <div class="pw-wrap" style="margin-bottom:16px;">
+      <input type="password" id="resetNewPass2" placeholder="تأكيد الباسورد" style="width:100%;background:rgba(255,254,249,0.06);border:1.5px solid rgba(201,151,58,0.3);border-radius:12px;padding:12px 16px 12px 36px;font-family:'Cairo',sans-serif;font-size:15px;color:#FDF8EE;direction:rtl;outline:none;">
+      <button type="button" class="pw-eye" onclick="togglePw('resetNewPass2',this)">👁</button>
+    </div>
+    <div id="resetPassErr" style="color:#FF9E9E;font-size:13px;min-height:18px;margin-bottom:12px;"></div>
+    <button onclick="doConfirmReset()" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:16px;font-weight:900;color:#1a1208;cursor:pointer;">حفظ الباسورد والدخول ✨</button>
   </div>
 </div>
 
