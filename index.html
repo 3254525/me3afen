@@ -8775,11 +8775,21 @@ function _startMultiGame() {
   multiState._peakScore = 0;
   multiState._scoreSavedThisRound = false;
   multiState._startedAt = Date.now();
+  multiState._roundId = Date.now();
   window._lockedScores = {};
   window._prevMultiScores = {};
+  // ★ تصفير scores في الـ cache المحلي عشان multiLiveScores تبدأ من ٠ فوراً
+  if (window._multiRoomCache && window._multiRoomCache.players) {
+    Object.keys(window._multiRoomCache.players).forEach(function(k) {
+      if (window._multiRoomCache.players[k]) {
+        window._multiRoomCache.players[k].score    = 0;
+        window._multiRoomCache.players[k].answered = false;
+        window._multiRoomCache.players[k].done     = false;
+      }
+    });
+  }
   const scoreEl = document.getElementById('multiMyScore');
   if (scoreEl) scoreEl.textContent = toArabicNum(0);
-  // ★ إخفاء النتايج القديمة + تصفير النقاط اللحظية
   document.getElementById('multiResults').style.display  = 'none';
   document.getElementById('multiLiveScores').innerHTML   = '';
   document.getElementById('multiWaiting').style.display  = 'none';
@@ -9426,27 +9436,25 @@ function multiPlayAgain() {
   clearInterval(multiState.questionTimer);
   clearTimeout(multiState.answerTimer);
 
-  // غير المضيف: يفضل في النتايج ويستنى المضيف — ما يرجعش لقاعة الانتظار
-  if (!multiState.isHost) {
-    const btn = document.getElementById('multiPlayAgainBtn');
-    if (btn) {
-      btn.textContent = '⏳ في انتظار المضيف...';
-      btn.disabled = true;
-      btn.style.opacity = '0.6';
-      btn.style.cursor = 'not-allowed';
-    }
-    // ابعت إشارة إنك مستعد
-    if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
-      const pk = multiState.playerKey || multiState.playerName;
-      window.fbMulti.updatePlayer(multiState.roomCode, pk, { requestRematch: true, lastSeen: Date.now() }).catch(() => {});
-    }
-    showToast('⏳ في انتظار المضيف يبدأ جولة جديدة...');
+  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
+  if (!room) { showMultiScreen(); return; }
+
+  // ★ منع الضغط المزدوج — لو الغرفة بالفعل في playing انتظر الـ listener
+  if (room.phase === 'playing') {
+    showToast('⏳ اللعبة شغّالة...');
     return;
   }
 
-  // المضيف: نفس الإعدادات + أسئلة جديدة + تصفير النقاط — وتبدأ الجولة فورًا أوتوماتيك
-  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
-  if (!room) { showMultiScreen(); return; }
+  // ★ إخفاء النتايج القديمة فوراً لكل من ضغط الزرار
+  const _resEl = document.getElementById('multiResults');
+  if (_resEl) {
+    _resEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;font-size:15px;">⏳ جاري تحضير الجولة الجديدة...</div>';
+  }
+
+  // ★ أي لاعب يقدر يبدأ — الأول اللي بيدوس بيكتب على Firebase
+  // الباقيين بيشوفوا phase=playing من الـ listener ويبدأوا تلقائي
+  const btn = document.getElementById('multiPlayAgainBtn');
+  if (btn) { btn.textContent = '⏳ جاري...'; btn.disabled = true; }
   showToast('🔄 جولة جديدة بأسئلة جديدة...');
 
   const newQs = _rebuildMultiQuestions(room);
