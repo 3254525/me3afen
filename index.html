@@ -1408,7 +1408,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     });
   };
 
-  // ★ نسيت كلمة المرور — يحفظ في Firebase DB ويدخّل فوراً بدون إيميل
+  // ★ تغيير كلمة المرور — يحفظ في Firebase DB ويدخّل فوراً
   window.fbForgotPasswordLogin = function(email, newPass, onSuccess, onError) {
     const _key      = dataKey(email);
     const _passHash = btoa(padPass(newPass));
@@ -1417,33 +1417,43 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       email, passHash: _passHash, updatedAt: Date.now(),
     });
 
+    // ★ خطوة ١: لو في session حالية مش anonymous → اكتب مباشرة
+    if (auth.currentUser && !auth.currentUser.isAnonymous) {
+      _writeBypass()
+        .then(() => onSuccess('bypass'))
+        .catch(() => onSuccess('local'));
+      return;
+    }
 
-    // ١. جرّب الباسورد الجديد — لو سبق غيّروه
+    // ★ خطوة ٢: جرّب الباسورد الجديد في Firebase Auth
     signInWithEmailAndPassword(auth, toFbEmail(email), padPass(newPass))
       .then(() => {
-        // ★ دايماً اكتب bypassAuth للتطابق على كل الأجهزة
         _writeBypass().catch(() => {});
         onSuccess('firebase');
       })
       .catch(() => {
-        // ٢. جرّب بالباسورد القديم المحفوظ محلياً
+        // ★ خطوة ٣: جرّب الباسورد القديم من localStorage
         const _lu = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
-        const _stored = _lu[email];
-        const _oldRaw = _stored && _stored.password ? (() => { try { return atob(_stored.password); } catch(e) { return null; } })() : null;
+        const _oldRaw = _lu[email] && _lu[email].password
+          ? (() => { try { return atob(_lu[email].password); } catch(e) { return null; } })()
+          : null;
 
         const _tryOldPass = _oldRaw
           ? signInWithEmailAndPassword(auth, toFbEmail(email), padPass(_oldRaw))
-          : Promise.reject('no-old-pass');
+          : Promise.reject('no-old');
 
         _tryOldPass
           .then(() => _writeBypass())
           .then(() => onSuccess('firebase'))
           .catch(() => {
-            // ٣. مفيش session — جرّب anonymous auth عشان نكتب bypassAuth
+            // ★ خطوة ٤: anonymous fallback (لو مفعّل)
             signInAnonymously(auth)
               .then(() => _writeBypass())
               .then(() => onSuccess('bypass'))
-              .catch(() => onSuccess('local')); // آخر خيار: محلي بس
+              .catch(() => {
+                // ★ خطوة ٥: حفظ محلي فقط — بيشتغل على نفس الجهاز
+                onSuccess('local');
+              });
           });
       });
   };
@@ -3436,12 +3446,31 @@ function doGoogleSignIn() {
   window.fbGoogleSignIn(({ email, name }) => {
     const users = getUsers();
     let userData = users[email] || createDefaultUserData();
-    userData.name = name; userData.email = email; userData.username = email; userData.isGuest = false;
+    // ★ الاسم المخصص له أولوية على اسم Google
+    const _customName = (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null)
+                     || (users[email] && users[email].name && !users[email].name.includes('@') ? users[email].name : null);
+    userData.name    = _customName || name; // custom > Google name
+    userData.email   = email;
+    userData.username = email;
+    userData.isGuest = false;
     try { const _u = JSON.parse(localStorage.getItem('nour_users')||'{}'); _u[email]=userData; localStorage.setItem('nour_users',JSON.stringify(_u)); } catch(e) {}
-    if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(email, userData);
+    // ★ نحفظ في Firebase بدون مسح الاسم المخصص
     if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, {...userData, isGuest:false});
     document.getElementById('loginScreen').classList.add('hide');
     loginSuccess(email, userData);
+    // ★ بعد الدخول: نجيب الاسم المحفوظ في Firebase ونحدّث لو مختلف
+    if (typeof window.fbGetName === 'function') {
+      window.fbGetName(email, (fbName) => {
+        if (fbName && fbName !== currentUser.name && currentUser && currentUser.username === email) {
+          currentUser.name = fbName;
+          window.currentUser = currentUser;
+          const el = document.getElementById('userNameDisplay');
+          if (el && !el.querySelector('input')) {
+            el.innerHTML = '👤 ' + fbName + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
+          }
+        }
+      });
+    }
   }, (code) => {
     if (code === 'auth/unauthorized-domain') showLoginErr('⚠️ أضف nourquranofficial.github.io في Firebase → Authentication → Authorized domains');
     else if (code) showLoginErr('خطأ: ' + code);
