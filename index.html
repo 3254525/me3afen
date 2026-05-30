@@ -1244,7 +1244,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       .then(result => {
         const u = result.user;
         const email = (u.email || '').toLowerCase();
-        const name  = u.displayName || email.split('@')[0];
+        const name  = (u.displayName && !u.displayName.includes('@')) ? u.displayName : '';
         onSuccess && onSuccess({ email, name });
       })
       .catch(e => {
@@ -1260,7 +1260,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       .then(result => {
         const u = result.user;
         const email = (u.email || '').toLowerCase();
-        const name  = u.displayName || email.split('@')[0];
+        const name  = (u.displayName && !u.displayName.includes('@')) ? u.displayName : '';
         onSuccess && onSuccess({ email, name });
       })
       .catch(e => {
@@ -1274,7 +1274,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     if (!result || !result.user) return;
     const gUser  = result.user;
     const email  = (gUser.email || '').toLowerCase();
-    const name   = gUser.displayName || email.split('@')[0];
+    const name   = (gUser.displayName && !gUser.displayName.includes('@')) ? gUser.displayName : '';
     if (!email) return;
     const _doLogin = () => {
       const users = getUsers ? getUsers() : {};
@@ -1889,7 +1889,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
         streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
         lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || fbData.name || (user && user.displayName) || '',
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || fbData.name || (user && user.displayName && !user.displayName.includes('@') ? user.displayName : null) || '',
         email: realUsername,
       };
       const doIt = () => {
@@ -3238,8 +3238,15 @@ function createDefaultUserData() {
 //   لو مفيش name مخصّص (حسابات قديمة أو ضيوف) يرجع username.
 function _displayName(u) {
   if (!u) return '';
-  if (typeof u === 'string') return u; // مرّروا اسم خام
-  return u.name || u.username || '';
+  if (typeof u === 'string') {
+    // لو الـ string ده إيميل — رجّع الجزء قبل @
+    return u.includes('@') ? u.split('@')[0] : u;
+  }
+  // name > جزء الإيميل قبل @ > مستخدم
+  if (u.name && u.name.trim() && !u.name.includes('@')) return u.name.trim();
+  const _raw = u.username || u.email || '';
+  if (_raw.includes('@')) return _raw.split('@')[0];
+  return _raw || '';
 }
 window._displayName = _displayName;
 
@@ -3309,7 +3316,7 @@ function doLogin() {
             streak:       Math.max((fbData && fbData.streak)       || 0, lData.streak       || 0),
             lastPlay:     (fbData && fbData.lastPlay) || lData.lastPlay || null,
             // ★ الاسم: المسار المستقل أولاً، ثم localStorage، ثم data
-            name: (typeof window._getStoredName === 'function' ? window._getStoredName(user) : null) || fbNameOverride || lData.name || (fbData && fbData.name) || realName || (user && user.split('@')[0]) || user,
+            name: (typeof window._getStoredName === 'function' ? window._getStoredName(user) : null) || fbNameOverride || lData.name || (fbData && fbData.name) || '',
             email: user,
           };
           try {
@@ -3346,11 +3353,16 @@ function doLogin() {
       (errMsg) => {
         currentUser = null; window.currentUser = null;
         document.getElementById('loginScreen').classList.remove('hide');
-        // ★ Fallback: لو Firebase فشل تماماً وفيه باسورد محلي صح — ادخّل محلياً
+        // ★ Fallback محلي: لو Firebase فشل وفيه باسورد محلي صح
         const _lFresh = getUsers()[user];
         if (!window._loggedOut && _lFresh && _lFresh.password === btoa(pass)) {
+          // ★ أضف الاسم من المصادر المتاحة قبل الدخول
+          const _storedName = (typeof window._getStoredName === 'function' ? window._getStoredName(user) : null)
+                           || _lFresh.name
+                           || (user && user.includes('@') ? user.split('@')[0] : user);
+          const _enriched = { ..._lFresh, name: _storedName, email: user };
           document.getElementById('loginScreen').classList.add('hide');
-          loginSuccess(user, _lFresh);
+          loginSuccess(user, _enriched);
           return;
         }
         showLoginErr(errMsg || 'الإيميل أو كلمة المرور خاطئة');
@@ -3359,11 +3371,14 @@ function doLogin() {
     return;
   }
 
-  // Fallback لو Firebase مش متاح
+  // Fallback لو Firebase مش متاح خالص
   if (!localData || !localData.password) { showLoginErr('الحساب غير موجود'); return; }
   if (localData.password !== btoa(pass)) { showLoginErr('كلمة المرور خاطئة'); return; }
+  const _offlineName = (typeof window._getStoredName === 'function' ? window._getStoredName(user) : null)
+                    || localData.name
+                    || (user && user.includes('@') ? user.split('@')[0] : user);
   document.getElementById('loginScreen').classList.add('hide');
-  loginSuccess(user, localData);
+  loginSuccess(user, { ...localData, name: _offlineName, email: user });
 }
 
 function doRegister() {
@@ -3494,12 +3509,14 @@ function _sendForgotEmail() {
   }
 
   window.fbForgotPasswordLogin(email, newPass, (type) => {
-    // حفظ الباسورد الجديد محلياً دايماً
+    // حفظ الباسورد الجديد محلياً مع الحفاظ على الاسم الموجود
     try {
       const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
       if (!_lu[email]) _lu[email] = {};
+      const _existingName = _lu[email].name || localStorage.getItem('nour_name_' + email);
       _lu[email].password = btoa(newPass);
       _lu[email].email = email;
+      if (_existingName) _lu[email].name = _existingName; // حافظ على الاسم
       localStorage.setItem('nour_users', JSON.stringify(_lu));
       localStorage.setItem('nour_last_user', email);
     } catch(e) {}
@@ -3514,7 +3531,7 @@ function _sendForgotEmail() {
         ...(fbData || {}),
         ...lData,
         email,
-        name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (fbData && fbData.name) || lData.name || email.split('@')[0],
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (fbData && fbData.name) || lData.name || '',
         isGuest: false,
         password: btoa(newPass),
         totalScore:   Math.max((fbData && fbData.totalScore) || 0, lData.totalScore || 0),
@@ -8023,14 +8040,17 @@ let multiState = {
   isHost: false,
   playerName: null,
   playerKey: null,
-  players: {},       // { username: { name, score, answered, ready } }
+  players: {},
   questions: [],
   qIndex: 0,
   myScore: 0,
+  _peakScore: 0,
+  _startedAt: 0,
+  _scoreSavedThisRound: false,
   totalQ: 20,
-  qTime: 15,       // ★ وقت كل سؤال بالثواني
+  qTime: 15,
   surahFilter: '',
-  phase: 'lobby',   // lobby | waiting | playing | results
+  phase: 'lobby',
   answerTimer: null,
   syncTimer: null,
   pollTimer: null,
@@ -9154,6 +9174,7 @@ function multiPlayAgain() {
 }
 
 window.multiPlayAgain = multiPlayAgain;
+window.multiLeaveRoom  = multiLeaveRoom;
 function multiLeaveRoom() {
   const code = multiState.roomCode;
   const pk = multiState.playerKey || multiState.playerName;
