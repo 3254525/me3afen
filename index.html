@@ -9509,7 +9509,7 @@ function _startPolling() {
           multiState._peakScore = 0;
           multiState.qIndex = 0;
           multiState._scoreSavedThisRound = false;
-          multiState._startedAt = room.startedAt || Date.now(); // ★ احفظ وقت البداية
+          multiState._startedAt = room.startedAt || Date.now();
           window._lockedScores = {};
           window._prevMultiScores = {};
           const _expFn = window._expandMultiQ || (q => q);
@@ -9517,13 +9517,37 @@ function _startPolling() {
           multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
           multiState.qTime = room.qTime || 15;
           document.getElementById('multiMyScore').textContent = toArabicNum(0);
-          document.getElementById('multiWaiting').style.display = 'none';
+          // ★ إخفاء النتايج القديمة وتصفير النقاط اللحظية
+          document.getElementById('multiResults').style.display  = 'none';
+          document.getElementById('multiLiveScores').innerHTML   = '';
+          document.getElementById('multiWaiting').style.display  = 'none';
           document.getElementById('multiGameArea').style.display = 'block';
           document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
           _renderMultiQuestion();
         } else {
           _updateWaitingUI();
         }
+      } else if (multiState.phase === 'results' && room.phase === 'playing') {
+        // ★ المضيف بدأ جولة جديدة والباقيين في النتايج — ابدأ الجولة الجديدة
+        multiState.myScore = 0;
+        multiState._peakScore = 0;
+        multiState.qIndex = 0;
+        multiState._scoreSavedThisRound = false;
+        multiState._startedAt = room.startedAt || Date.now();
+        window._lockedScores = {};
+        window._prevMultiScores = {};
+        const _expFn2 = window._expandMultiQ || (q => q);
+        multiState.questions = (room.questions || []).map(_expFn2);
+        multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
+        multiState.qTime = room.qTime || 15;
+        document.getElementById('multiMyScore').textContent = toArabicNum(0);
+        document.getElementById('multiResults').style.display  = 'none';
+        document.getElementById('multiLiveScores').innerHTML   = '';
+        document.getElementById('multiWaiting').style.display  = 'none';
+        document.getElementById('multiGameArea').style.display = 'block';
+        document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
+        multiState.phase = 'playing';
+        _renderMultiQuestion();
       } else if (multiState.phase === 'playing') {
         _updateMultiLiveScores();
         // ★ لو الغرفة انتهت (finished) → اعرض النتائج فوراً
