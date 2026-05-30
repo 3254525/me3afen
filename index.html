@@ -2003,9 +2003,10 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
     setDisconnect: function(roomCode, playerKey, isHost) {
       if (isHost) {
-        // المضيف — لو انقطع نعلّم الغرفة phase=closed (زي نسخة المرجع)
-        // الغرفة بتفضل عشان اللاعبين يشوفوا إنها قفلت، وبيتم مسحها لاحقاً عبر cleanOldRooms
-        onDisconnect(ref(db, ROOMS_PATH + roomCode + '/phase')).set('closed');
+        // ★ المضيف — لو انقطع نعلّمه بس بـ hostOffline، مش نقفل الغرفة
+        // عشان لو عمل switch لواتساب ورجع، الغرفة بتفضل شغّالة
+        onDisconnect(ref(db, ROOMS_PATH + roomCode + '/hostOffline')).set(true);
+        onDisconnect(ref(db, ROOMS_PATH + roomCode + '/hostOfflineAt')).set(Date.now());
       } else {
         // ★ لاعب عادي: مانمحيهوش لو انقطع — بس نحطّ علم disconnected
         // (الإزالة الكاملة كانت بتمسح نقاطه لو حصل قطع شبكة لحظي على الموبايل)
@@ -3255,7 +3256,7 @@ function _displayName(u) {
   if (!u) return '';
   if (typeof u === 'string') return u.includes('@') ? '' : u;
   if (u.name && u.name.trim() && !u.name.includes('@')) return u.name.trim();
-  return ''; // لا اسم حقيقي → فاضي مش إيميل
+  return ''; // فاضي — المستخدم يضيف اسمه بنفسه
 }
 window._displayName = _displayName;
 
@@ -3549,22 +3550,50 @@ function _sendForgotEmail() {
     localStorage.setItem('nour_last_user', email);
   } catch(e) {}
 
-  // ★ خطوة ٢: أغلق الـ modal + blur الـ keyboard فوراً
-  closeForgotPassModal();
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 
-  showToast('✅ تم حفظ الباسورد — جاري الدخول...');
-
-  // ★ اكتب bypassAuth في الخلفية ثم reload — الأضمن على الموبايل
+  // ★ احفظ البيانات للدخول عند الضغط على الزرار
+  window._pendingPassLogin = { email, passB64: btoa(newPass) };
   window._loggedOut = false;
   window._cancelBgAuth = false;
   if (typeof window.fbForgotPasswordLogin === 'function') {
     window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
   }
 
-  // بعد 800ms: reload الصفحة — هيدخّله تلقائي من localStorage
-  setTimeout(() => { window.location.reload(); }, 800);
+  // ★ أظهر رسالة نجاح جوا الـ modal مع زرار دخول صريح
+  const _modal = document.getElementById('forgotPassModal');
+  if (_modal) {
+    const _inner = _modal.querySelector('div');
+    if (_inner) _inner.innerHTML =
+      '<div style="text-align:center;padding:20px 0;">' +
+      '<div style="font-size:52px;margin-bottom:16px;">✅</div>' +
+      '<div style="font-size:18px;font-weight:700;color:var(--gold);font-family:Cairo,sans-serif;margin-bottom:8px;">تم حفظ الباسورد!</div>' +
+      '<div style="font-size:13px;color:rgba(245,217,139,0.55);font-family:Cairo,sans-serif;margin-bottom:24px;">اضغط زرار الدخول للمتابعة</div>' +
+      '<button onclick="window._doPassLogin()" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:14px;font-family:Cairo,sans-serif;font-size:16px;font-weight:900;color:#1a1208;cursor:pointer;touch-action:manipulation;">دخول ✅</button>' +
+      '</div>';
+  }
 }
+// ★ دخول بعد تغيير الباسورد — بيتنادى من زرار صريح بدون timing issues
+window._doPassLogin = function() {
+  const _p = window._pendingPassLogin || {};
+  const email = _p.email || '';
+  const passB64 = _p.passB64 || '';
+  if (!email) return;
+  closeForgotPassModal();
+  window._loggedOut = false;
+  const _lData = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}')[email] || {}; } catch(e) { return {}; } })();
+  if (typeof window._markAuthDone === 'function') window._markAuthDone();
+  // أخفِ loginScreen
+  const _ls = document.getElementById('loginScreen');
+  if (_ls) { _ls.classList.add('hide'); _ls.style.pointerEvents = 'none'; _ls.style.display = 'none'; }
+  if (typeof window.loginSuccess === 'function') {
+    window.loginSuccess(email, {
+      ..._lData, email, isGuest: false, password: passB64,
+      name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (_lData.name && !_lData.name.includes('@') ? _lData.name : '') || '',
+    });
+  }
+  showToast('✅ أهلاً!');
+};
 window.doForgotPassword = doForgotPassword;
 window.closeForgotPassModal = closeForgotPassModal;
 window._sendForgotEmail = _sendForgotEmail;
@@ -3703,7 +3732,7 @@ window._switchBackToSaved = _switchBackToSaved;
 
 function guestLogin() {
   const guestName = 'ضيف_' + Math.floor(Math.random()*9999);
-  const data = createDefaultUserData();
+  const data = { ...createDefaultUserData(), name: guestName };
   loginSuccess(guestName, data, true);
 }
 
@@ -9223,6 +9252,10 @@ function multiLeaveRoom() {
 
 function _startPolling() {
   clearInterval(multiState.pollTimer);
+  // ★ لو المضيف رجع — امسح علامة الغياب
+  if (multiState.isHost && multiState.roomCode && typeof window.fbMulti !== 'undefined') {
+    window.fbMulti.updateRoom(multiState.roomCode, { hostOffline: null, hostOfflineAt: null }).catch(() => {});
+  }
   if (typeof window.fbMulti !== 'undefined') {
     // بدل polling — استخدم Firebase realtime listener
     window.fbMulti.stopListen(multiState.roomCode);
@@ -9273,6 +9306,15 @@ function _startPolling() {
         showToast('🚪 أغلق المضيف الغرفة');
         showMultiScreen();
         return;
+      }
+      // ★ لو المضيف خرج مؤقتاً (واتساب مثلاً) — انتظر ولا تقفل
+      if (room.hostOffline && !multiState.isHost) {
+        // المضيف خرج مؤقتاً — أظهر رسالة انتظار بس ما تمسحش الغرفة
+        const _offlineFor = Date.now() - (room.hostOfflineAt || Date.now());
+        if (_offlineFor > 60000) { // لو زاد عن دقيقة
+          showToast('⏳ المضيف غاب أكتر من دقيقة...');
+        }
+        // استمر في المراقبة
       }
       window._multiRoomCache = room;
       // Keep alive — كل ٣٠ ثانية بس عشان ما نسبّبش rate limiting
@@ -9758,32 +9800,39 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <script>
 // ─── مسح اللاعب من Firebase لو أغلق المتصفح أو انتقل لصفحة تانية ───
-window.addEventListener('pagehide', function() {
+window.addEventListener('pagehide', function(e) {
   const ms = window.multiState;
   if (!ms || !ms.roomCode) return;
   const code = ms.roomCode;
   const pk   = ms.playerKey || ms.playerName;
   if (!code || !pk) return;
 
+  // ★ لو persisted = true → المستخدم بس غيّر التطبيق (واتساب مثلاً) وهيرجع
+  // ما نمسحش الغرفة عشان باقي اللاعبين يقدروا يكملوا
+  if (e.persisted) return;
+
   const dbUrl = 'https://nour-9bd41-default-rtdb.europe-west1.firebasedatabase.app';
 
-  // مسح اللاعب دايماً
-  const playerUrl = dbUrl + '/nour_rooms/' + code + '/players/' + pk + '.json';
-  navigator.sendBeacon(playerUrl, new Blob(['null'], { type: 'application/json' }));
-
-  // لو المضيف — امسح الغرفة كلها
-  if (ms.isHost) {
-    const roomUrl = dbUrl + '/nour_rooms/' + code + '.json';
-    navigator.sendBeacon(roomUrl, new Blob(['null'], { type: 'application/json' }));
+  // مسح اللاعب بس لو مش مضيف وغلق المتصفح فعلاً
+  if (!ms.isHost) {
+    const playerUrl = dbUrl + '/nour_rooms/' + code + '/players/' + pk + '.json';
+    navigator.sendBeacon(playerUrl, new Blob(['null'], { type: 'application/json' }));
   }
+  // ★ المضيف ما نمسحش الغرفة عند pagehide — فقط عند multiLeaveRoom صريح
 });
 
 // ─── Safety net: لو الصفحة اترجعت من الـ bfcache — نتأكد من تنظيف الحالة ───
 window.addEventListener('pageshow', function(e) {
   if (e.persisted && window.multiState && window.multiState.roomCode) {
-    // الصفحة اترجعت من bfcache وفيه غرفة قديمة — نمسح الحالة
-    window.multiState.roomCode = null;
-    window.multiState.phase = 'lobby';
+    // ★ الصفحة اترجعت من bfcache — نستأنف المراقبة بدل ما نمسح الحالة
+    const _code = window.multiState.roomCode;
+    if (_code && typeof _startPolling === 'function') {
+      setTimeout(() => {
+        if (window.multiState && window.multiState.roomCode === _code) {
+          _startPolling();
+        }
+      }, 500);
+    }
   }
 });
 </script>
