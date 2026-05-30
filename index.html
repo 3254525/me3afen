@@ -2620,7 +2620,7 @@ function _callWhenReady(fn, args) {
         <span style="font-size:13px;color:var(--gold);" id="userLevelDisplay">المستوى ١</span>
         <span class="user-logout" onclick="resetScore()" style="color:rgba(255,120,100,0.5);" title="تصفير النقاط">🔄</span>
         <span class="user-logout" onclick="doDeleteAccount()" style="color:rgba(255,80,80,0.45);font-size:11px;" title="حذف الحساب نهائياً">🗑️</span>
-        <button onclick="doLogout()" style="background:none;border:none;font-size:13px;color:rgba(245,217,139,0.55);cursor:pointer;font-family:'Cairo',sans-serif;padding:6px 10px;border-radius:8px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">خروج ↩</button>
+        <button onclick="doLogout()" ontouchend="event.preventDefault();doLogout();" style="background:none;border:none;font-size:13px;color:rgba(245,217,139,0.55);cursor:pointer;font-family:'Cairo',sans-serif;padding:6px 10px;border-radius:8px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">خروج ↩</button>
       </div>
     </div>
 
@@ -3907,7 +3907,7 @@ function editDisplayName() {
         ' style="width:100%;background:rgba(201,151,58,0.1);border:1.5px solid rgba(201,151,58,0.4);border-radius:12px;padding:10px 14px;font-family:Cairo,sans-serif;font-size:15px;color:var(--gold);direction:rtl;outline:none;text-align:right;box-sizing:border-box;">' +
         '<div style="display:flex;gap:8px;margin-top:12px;">' +
           '<button onclick="_cancelNameEdit()" style="flex:1;padding:10px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;font-size:14px;cursor:pointer;">إلغاء</button>' +
-          '<button onclick="_saveNameEdit()" style="flex:2;padding:10px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:10px;font-family:Cairo,sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;">حفظ ✓</button>' +
+          '<button onclick="_saveNameEdit()" ontouchend="event.preventDefault();_saveNameEdit();" style="flex:2;padding:10px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:10px;font-family:Cairo,sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;touch-action:manipulation;">حفظ ✓</button>' +
         '</div>' +
       '</div>';
     document.body.appendChild(overlay);
@@ -4017,11 +4017,18 @@ window.doDeleteAccount = doDeleteAccount;
 
 
 function _finishLogin(username, isGuest) {
-  // ★ إخفاء loginScreen وإظهار homeScreen
+  // ★ إخفاء loginScreen بكل الطرق
   const _lsEl = document.getElementById('loginScreen');
-  if (_lsEl) { _lsEl.classList.add('hide'); _lsEl.style.cssText += ';display:none!important;pointer-events:none!important;'; }
-  showScreen('homeScreen');
-  window.scrollTo(0, 0); // ★ الموبايل: تأكيد إن الصفحة في الأعلى والأزرار قابلة للضغط
+  if (_lsEl) {
+    _lsEl.classList.add('hide');
+    _lsEl.style.display = 'none';
+    _lsEl.style.pointerEvents = 'none';
+    _lsEl.style.visibility = 'hidden';
+  }
+  // ★ homeScreen: أضف show بدون ما نشيله من باقي الـ screens أولاً (يمنع flicker على الموبايل)
+  const _hsEl = document.getElementById('homeScreen');
+  if (_hsEl) _hsEl.classList.add('show');
+  window.scrollTo(0, 0);
 
   // ★ الاسم: جرب كل المصادر بالترتيب
   if (currentUser) {
@@ -4039,6 +4046,22 @@ function _finishLogin(username, isGuest) {
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
+  // ★ الموبايل: نضيف touchend listeners مباشرة على الأزرار عشان نتجاوز مشاكل onclick
+  setTimeout(() => {
+    // زرار الخروج
+    document.querySelectorAll('[onclick*="doLogout"]').forEach(el => {
+      el.ontouchend = function(e) { e.preventDefault(); doLogout(); };
+    });
+    // زرار تعديل الاسم ✏️
+    document.querySelectorAll('[onclick*="editDisplayName"]').forEach(el => {
+      el.ontouchend = function(e) { e.preventDefault(); e.stopPropagation(); editDisplayName(); };
+    });
+    // زرار حفظ الاسم ✓
+    document.querySelectorAll('[onclick*="_saveNameEdit"]').forEach(el => {
+      el.ontouchend = function(e) { e.preventDefault(); _saveNameEdit(); };
+    });
+  }, 600);
+
   checkStreak();
   renderLevels();
   updateHomeStats();
@@ -4097,32 +4120,17 @@ function _finishLogin(username, isGuest) {
 function doLogout() {
   window._isLoggingOut = true;
   window._loggedOut = true;
-  window._cancelBgAuth = true;
-  if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName(); // ★ أوقف أي background Firebase auth
+  if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName();
   saveCurrentUser();
-  window._pendingAutoLogin = null;
   try { clearTimeout(window._autoLoginFallbackTimer); } catch (e) {}
   if (typeof window.fbUnwatchMistakes === 'function') window.fbUnwatchMistakes();
   if (typeof window.fbUnwatchUserData === 'function') window.fbUnwatchUserData();
   currentUser = null;
   window.currentUser = null;
-  window._lbAllList = null;
   try { localStorage.removeItem('nour_last_user'); } catch(e) {}
-  // ★ مش بنعمل _resetAuthDone هنا عشان ما يدخّلوش تاني قبل ما signOut يخلص
-  // onAuthStateChanged(null) هو اللي هيعمل _authDone = false لما signOut يكتمل
   if (typeof window.fbLogout === 'function') window.fbLogout();
-  // أخفِ أي overlay
-  const _ov = document.getElementById('_nameEditOverlay');
-  if (_ov) _ov.style.display = 'none';
-  // أظهر loginScreen بشكل نظيف
-  const _lsOut = document.getElementById('loginScreen');
-  if (_lsOut) {
-    _lsOut.classList.remove('hide');
-    _lsOut.style.display = '';
-    _lsOut.style.pointerEvents = '';
-    _lsOut.style.cssText = _lsOut.style.cssText.replace(/display[^;]*;?/g,'').replace(/pointer-events[^;]*;?/g,'');
-  }
-  setTimeout(() => { window._isLoggingOut = false; }, 1500);
+  // ★ reload مباشر بدون setTimeout - iOS بيمنع navigation من داخل setTimeout
+  window.location.href = window.location.href;
 }
 
 function saveCurrentUser() {
