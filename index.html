@@ -1301,21 +1301,24 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
   window.fbRegister = function(email, password, onSuccess, onError) {
     const fbEmail = toFbEmail(email);
-    const key     = dataKey(email); // مفتاح مبني على الإيميل
+    const key     = dataKey(email);
 
     createUserWithEmailAndPassword(auth, fbEmail, padPass(password))
       .then(() => {
-        // احفظ الباسورد محلياً عشان الدخول التلقائي المرة الجاية
         try {
           const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
           if (!_u[email]) _u[email] = {};
           _u[email].password = btoa(password);
           localStorage.setItem('nour_users', JSON.stringify(_u));
         } catch(e) {}
-        // اكتب الـ profile وانتظره يخلص قبل الدخول عشان الاسم يتسجّل صح
-        return set(ref(db, 'users/' + key + '/profile'), {
+        // ★ اكتب bypassAuth من أول لحظة عشان كل الأجهزة تعرف الباسورد
+        const _bpa = set(ref(db, 'users/' + key + '/bypassAuth'), {
+          email, passHash: btoa(padPass(password)), updatedAt: Date.now(),
+        }).catch(() => {});
+        const _prof = set(ref(db, 'users/' + key + '/profile'), {
           email, createdAt: Date.now()
-        }).catch(() => {}).then(() => onSuccess());
+        }).catch(() => {});
+        return Promise.all([_bpa, _prof]).then(() => onSuccess());
       })
       .catch(e => {
         const code = e && e.code;
@@ -1334,92 +1337,112 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
   window.fbSignIn = window.fbLogin = function(email, password, onSuccess, onError) {
     const fbEmail = toFbEmail(email);
-    signInWithEmailAndPassword(auth, fbEmail, padPass(password))
-      .then(() => {
-        try {
-          const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-          if (!_u[email]) _u[email] = {};
-          _u[email].password = btoa(password);
-          localStorage.setItem('nour_users', JSON.stringify(_u));
-        } catch(e) {}
-        onSuccess();
-      })
-      .catch((e) => {
-        if (e.code === 'auth/too-many-requests') {
+    const _key    = dataKey(email);
+
+    // ★ المنطق: bypassAuth هي المصدر الحقيقي للباسورد لو موجودة
+    //   لو مش موجودة → Firebase Auth هو المصدر
+    get(ref(db, 'users/' + _key + '/bypassAuth')).then((snap) => {
+      if (snap.exists()) {
+        const bpa = snap.val();
+        if (bpa && bpa.passHash === btoa(padPass(password))) {
+          // ★ الباسورد صح — حدّث localStorage فوراً
           try {
-            const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
-            if (users[email] && users[email].password === btoa(password)) { onSuccess(); return; }
-          } catch(ex) {}
-          onError('الحساب محجوب مؤقتاً من Firebase، حاول بعد قليل');
-        } else if (e.code === 'auth/user-not-found') {
-          onError('الإيميل ده مش مسجّل — أنشئ حساباً جديداً');
-        } else if (e.code === 'auth/operation-not-allowed' || e.code === 'auth/configuration-not-found') {
-          onError('⛔ خدمة الحسابات مش مفعّلة في Firebase (Authentication ← Email/Password ← Enable).');
-        } else if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
-          // ★ جرّب bypassAuth من Firebase DB (لو غيّروا الباسورد بدون إيميل)
-          const _key = dataKey(email);
-          get(ref(db, 'users/' + _key + '/bypassAuth')).then((snap) => {
-            if (snap.exists()) {
-              const bpa = snap.val();
-              if (bpa && bpa.passHash === btoa(padPass(password))) {
-                // الباسورد صح من Firebase DB — دخّل بـ anonymous
-                signInAnonymously(auth).then(onSuccess).catch(() => onError('الإيميل أو كلمة المرور خاطئة'));
-              } else {
-                onError('الإيميل أو كلمة المرور خاطئة');
-              }
-            } else {
-              onError('الإيميل أو كلمة المرور خاطئة');
-            }
-          }).catch(() => onError('الإيميل أو كلمة المرور خاطئة'));
-        } else if (e.code === 'auth/network-request-failed') {
-          onError('في مشكلة في الإنترنت — اتأكد من اتصالك');
+            const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+            if (!_lu[email]) _lu[email] = {};
+            _lu[email].password = btoa(password);
+            _lu[email].email = email;
+            localStorage.setItem('nour_users', JSON.stringify(_lu));
+          } catch(e) {}
+          // حاول تسجيل الدخول بـ Firebase Auth — لو نجح ممتاز، لو لأ ادخّل على كل حال
+          signInWithEmailAndPassword(auth, fbEmail, padPass(password))
+            .then(() => onSuccess())
+            .catch(() => {
+              // Firebase Auth ما اتحدثش — ادخّل بدونه
+              onSuccess();
+            });
         } else {
-          onError('تعذّر الدخول: ' + (e.code || 'خطأ غير معروف'));
+          // ★ الباسورد غلط — حتى لو Firebase Auth يقبله بالقديم → ارفض
+          onError('الإيميل أو كلمة المرور خاطئة');
         }
-      });
+      } else {
+        // مفيش bypassAuth → Firebase Auth هو المصدر، وبنكتب bypassAuth للمرات الجاية
+        signInWithEmailAndPassword(auth, fbEmail, padPass(password))
+          .then(() => {
+            // ★ اكتب bypassAuth للمرة الأولى عشان كل الأجهزة تعرف الباسورد الصح
+            set(ref(db, 'users/' + _key + '/bypassAuth'), {
+              email, passHash: btoa(padPass(password)), updatedAt: Date.now(),
+            }).catch(() => {});
+            try {
+              const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+              if (!_lu[email]) _lu[email] = {};
+              _lu[email].password = btoa(password);
+              localStorage.setItem('nour_users', JSON.stringify(_lu));
+            } catch(e) {}
+            onSuccess();
+          })
+          .catch((e) => {
+            if (e.code === 'auth/too-many-requests') {
+              try {
+                const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
+                if (users[email] && users[email].password === btoa(password)) { onSuccess(); return; }
+              } catch(ex) {}
+              onError('الحساب محجوب مؤقتاً من Firebase، حاول بعد قليل');
+            } else if (e.code === 'auth/user-not-found') {
+              onError('الإيميل ده مش مسجّل — أنشئ حساباً جديداً');
+            } else if (e.code === 'auth/operation-not-allowed' || e.code === 'auth/configuration-not-found') {
+              onError('⛔ خدمة الحسابات مش مفعّلة في Firebase (Authentication ← Email/Password ← Enable).');
+            } else if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
+              onError('الإيميل أو كلمة المرور خاطئة');
+            } else if (e.code === 'auth/network-request-failed') {
+              onError('في مشكلة في الإنترنت — اتأكد من اتصالك');
+            } else {
+              onError('تعذّر الدخول: ' + (e.code || 'خطأ غير معروف'));
+            }
+          });
+      }
+    }).catch(() => {
+      // Firebase مش متاح — جرّب Firebase Auth مباشرة
+      signInWithEmailAndPassword(auth, fbEmail, padPass(password))
+        .then(() => onSuccess())
+        .catch((e) => onError('الإيميل أو كلمة المرور خاطئة'));
+    });
   };
 
   // ★ نسيت كلمة المرور — يحفظ في Firebase DB ويدخّل فوراً بدون إيميل
   window.fbForgotPasswordLogin = function(email, newPass, onSuccess, onError) {
-    const _key     = dataKey(email);
+    const _key      = dataKey(email);
     const _passHash = btoa(padPass(newPass));
 
-    // ١. جرّب الباسورد الجديد في Firebase Auth (لو سبق غيّروه)
-    signInWithEmailAndPassword(auth, toFbEmail(email), padPass(newPass))
-      .then(() => onSuccess('firebase'))
-      .catch(() => {
-        // ٢. اكتب الباسورد الجديد في Firebase DB مباشرة (بدون anonymous)
-        //    لو في session حالية → هتنجح، لو لأ → الـ .catch هيتعامل معاها
-        const _writeBypass = () => set(ref(db, 'users/' + _key + '/bypassAuth'), {
-          email,
-          passHash: _passHash,
-          updatedAt: Date.now(),
-        });
+    const _writeBypass = () => set(ref(db, 'users/' + _key + '/bypassAuth'), {
+      email, passHash: _passHash, updatedAt: Date.now(),
+    });
 
-        _writeBypass()
-          .then(() => onSuccess('bypass'))
+    const _updateAuthPass = () => import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js')
+      .then(({ updatePassword }) => updatePassword(auth.currentUser, padPass(newPass)).catch(() => {}));
+
+    // ١. جرّب الباسورد الجديد — لو سبق غيّروه
+    signInWithEmailAndPassword(auth, toFbEmail(email), padPass(newPass))
+      .then(() => {
+        // ★ دايماً اكتب bypassAuth للتطابق على كل الأجهزة
+        _writeBypass().catch(() => {});
+        onSuccess('firebase');
+      })
+      .catch(() => {
+        // ٢. جرّب بالباسورد القديم المحفوظ محلياً
+        const _lu = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
+        const _stored = _lu[email];
+        const _oldRaw = _stored && _stored.password ? (() => { try { return atob(_stored.password); } catch(e) { return null; } })() : null;
+
+        const _tryOldPass = _oldRaw
+          ? signInWithEmailAndPassword(auth, toFbEmail(email), padPass(_oldRaw))
+          : Promise.reject('no-old-pass');
+
+        _tryOldPass
+          .then(() => Promise.all([_writeBypass(), _updateAuthPass()]))
+          .then(() => onSuccess('firebase'))
           .catch(() => {
-            // ٣. مفيش session — ادخّل بـ old password لو محفوظ
-            const _lUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
-            const _stored = _lUsers[email];
-            if (_stored && _stored.password) {
-              const _oldPass = (() => { try { return atob(_stored.password); } catch(e) { return null; } })();
-              if (_oldPass) {
-                signInWithEmailAndPassword(auth, toFbEmail(email), padPass(_oldPass))
-                  .then(() => _writeBypass())
-                  .then(() => {
-                    // غيّر الباسورد في Firebase Auth نفسه
-                    import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js')
-                      .then(({ updatePassword }) => updatePassword(auth.currentUser, padPass(newPass)).catch(() => {}));
-                    onSuccess('firebase');
-                  })
-                  .catch(() => onSuccess('local')); // حفظ محلي فقط
-              } else {
-                onSuccess('local');
-              }
-            } else {
-              onSuccess('local');
-            }
+            // ٣. مفيش session — احفظ محلياً فقط وادخّله
+            onSuccess('local');
           });
       });
   };
@@ -1811,86 +1834,68 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     if (_authDone) return;
     _authDone = true;
 
-    const emailKey = (user.email || '').replace(/@.*$/, '');
-    const tryGetProfile = (path) => get(ref(db, path)).then(s => s.exists() ? s.val() : null).catch(() => null);
+    const realEmail    = (user.email || '').toLowerCase().trim();
+    const _dbKey       = dataKey(realEmail); // ★ المفتاح الصحيح المتطابق مع الكتابة
+    const realUsername = realEmail;          // نستخدم الإيميل كامل دايماً
 
+    const tryGet = (path) => get(ref(db, path)).then(s => s.exists() ? s.val() : null).catch(() => null);
+
+    // اقرأ البيانات من المسار الصحيح
     Promise.all([
-      tryGetProfile('users/' + emailKey + '/profile'),
-      tryGetProfile('nour_users/' + window._makeKey(emailKey, false)),
-    ]).then(([profileNew, profileOld]) => {
-      const profile = profileNew || profileOld;
-      const realUsername = (profile && profile.username) ? profile.username : emailKey;
+      tryGet('users/' + _dbKey + '/data'),
+      tryGet('users/' + _dbKey + '/profile'),
+    ]).then(([fbData_, fbProfile]) => {
+      const fbData = fbData_ || {};
 
-      // ★ نقرأ بيانات الحساب من المفتاح الموحّد (emailKey) — هو نفسه dataKey
-      //   اللي بتكتب بيه كل دوال الحفظ، فالقراءة والكتابة على نفس المسار بالظبط
-      get(ref(db, 'users/' + emailKey + '/data'))
-        .then(snap => {
-          const fbData = snap.exists() ? snap.val() : {};
-          // ★ الإصلاح: Firebase هو المصدر الحقيقي — خذ قيمة Firebase دايماً
-          // فقط لو Firebase = 0 والمحلي أكبر (جهاز جديد لسه ما رفعش) نرفع المحلي
-          const _localUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
-          const _localData = _localUsers[realUsername] || {};
-          const fbScore   = fbData.totalScore   || 0;
-          const fbHasanat = fbData.totalHasanat || 0;
-          const fbGames   = fbData.totalGames   || 0;
-          // دمج صحيح: Firebase هو المصدر الرئيسي، لو المحلي أعلى ارفعه على Firebase
-          const merged = {
-            totalScore:   Math.max(fbScore,   _localData.totalScore   || 0),
-            totalGames:   Math.max(fbGames,   _localData.totalGames   || 0),
-            totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
-            streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
-            lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-            // ★ الاسم: خذ المحلي أولاً (لو المستخدم غيّره) ثم Firebase ثم Google display name
-            name: _localData.name || fbData.name || (user && user.displayName) || '',
-            email: realUsername,
-          };
-          // استنى loginSuccess لو لسه الـ regular script ما اتحملش
-          const doIt = () => {
-            if (typeof window.loginSuccess === 'function') {
-              window.loginSuccess(realUsername, merged);
-              // لو المحلي أعلى من Firebase — ارفع الدمج على Firebase فوراً (sync)
-              const _fbS = fbData.totalScore   || 0;
-              const _fbH = fbData.totalHasanat || 0;
-              const _fbG = fbData.totalGames   || 0;
-              if (merged.totalScore > _fbS || merged.totalHasanat > _fbH || merged.totalGames > _fbG) {
-                try {
-                  if (typeof window.fbSaveFullUserData === 'function') {
-                    window.fbSaveFullUserData(realUsername, merged);
-                  }
-                  if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
-                    window.fbSaveUser(realUsername, Object.assign({}, merged, {isGuest: false}));
-                  }
-                } catch(e) {}
-              }
-            } else {
-              setTimeout(doIt, 30);
-            }
-          };
-          doIt();
-        })
-        .catch(() => {
-          // Firebase مش متاح — خذ البيانات المحلية
-          const _lU = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
-          const _lD = _lU[realUsername] || {};
-          const fallbackData = {
-            totalScore:   _lD.totalScore   || 0,
-            totalGames:   _lD.totalGames   || 0,
-            totalHasanat: _lD.totalHasanat || 0,
-            streak:       _lD.streak       || 0,
-            lastPlay:     _lD.lastPlay     || null,
-            name:         _lD.name || (user && user.displayName) || '',
-            email:        realUsername,
-          };
-          const doIt = () => {
-            if (typeof window.loginSuccess === 'function') {
-              window.loginSuccess(realUsername, fallbackData);
-            } else {
-              setTimeout(doIt, 30);
-            }
-          };
-          doIt();
-        });
-    }).catch(() => { _authDone = false; });
+      const _localUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
+      const _localData  = _localUsers[realUsername] || {};
+
+      const fbScore   = fbData.totalScore   || 0;
+      const fbHasanat = fbData.totalHasanat || 0;
+      const fbGames   = fbData.totalGames   || 0;
+
+      const merged = {
+        totalScore:   Math.max(fbScore,   _localData.totalScore   || 0),
+        totalGames:   Math.max(fbGames,   _localData.totalGames   || 0),
+        totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
+        streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
+        lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
+        name: _localData.name || fbData.name || (fbProfile && fbProfile.name) || (user && user.displayName) || '',
+        email: realUsername,
+      };
+      const doIt = () => {
+        if (typeof window.loginSuccess === 'function') {
+          window.loginSuccess(realUsername, merged);
+          if (merged.totalScore > fbScore || merged.totalHasanat > fbHasanat || merged.totalGames > fbGames) {
+            try {
+              if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(realUsername, merged);
+              if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) window.fbSaveUser(realUsername, Object.assign({}, merged, {isGuest: false}));
+            } catch(e) {}
+          }
+        } else {
+          setTimeout(doIt, 30);
+        }
+      };
+      doIt();
+    }).catch(() => {
+      // Firebase مش متاح — خذ البيانات المحلية
+      const _lU = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
+      const _lD = _lU[realUsername] || {};
+      const fallbackData = {
+        totalScore:   _lD.totalScore   || 0,
+        totalGames:   _lD.totalGames   || 0,
+        totalHasanat: _lD.totalHasanat || 0,
+        streak:       _lD.streak       || 0,
+        lastPlay:     _lD.lastPlay     || null,
+        name:         _lD.name || (user && user.displayName) || '',
+        email:        realUsername,
+      };
+      const doIt2 = () => {
+        if (typeof window.loginSuccess === 'function') window.loginSuccess(realUsername, fallbackData);
+        else setTimeout(doIt2, 30);
+      };
+      doIt2();
+    });
   }
 
   // ============================================================
@@ -3255,104 +3260,58 @@ function doLogin() {
   const users = getUsers();
   const localData = users[user];
 
-  if (localData && localData.password) {
-    if (localData.password !== btoa(pass)) { showLoginErr('كلمة المرور خاطئة'); return; }
-    // دخول فوري من المحلي
-    document.getElementById('loginScreen').classList.add('hide');
-    loginSuccess(user, localData);
-    // Firebase في الخلفية — نجيب السكور الحقيقي ونحدّث
-    if (typeof window.fbLogin === 'function') {
-      window.fbLogin(user, pass, () => {
-        if (typeof window.fbGetUserData === 'function') {
-          window.fbGetUserData(user, (fbData) => {
-            if (!fbData || !window.currentUser || window.currentUser.username !== user) return;
-            // دمج صحيح: خذ الأعلى في كل حقل (تشغيل على أجهزة مختلفة)
-            const merged = {
-              totalScore:   Math.max(fbData.totalScore   || 0, localData.totalScore   || 0),
-              totalGames:   Math.max(fbData.totalGames   || 0, localData.totalGames   || 0),
-              totalHasanat: Math.max(fbData.totalHasanat || 0, localData.totalHasanat || 0),
-              streak:   Math.max(fbData.streak   || 0, localData.streak   || 0),
-              lastPlay: fbData.lastPlay || localData.lastPlay || null,
-            };
-            Object.assign(window.currentUser, merged);
-            currentUser = window.currentUser;
-            if (typeof updateHomeStats === 'function') updateHomeStats();
-            if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(user, merged);
-            if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
-              window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
-            }
-          });
-        }
-      }, (loginErr) => {
-        // ★ الحساب قديم/محلي مش موجود في السحابة → سجّله تلقائيًا عشان يشتغل على كل الأجهزة
-        if (/خاطئة|غير موجود/.test(loginErr || '') && typeof window.fbRegister === 'function') {
-          window.fbRegister(user, pass, () => {
-            const _mig = {
-              totalScore:   localData.totalScore   || 0,
-              totalGames:   localData.totalGames   || 0,
-              totalHasanat: localData.totalHasanat || 0,
-              streak:       localData.streak       || 0,
-              lastPlay:     localData.lastPlay      || null,
-            };
-            if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(user, _mig);
-            if (typeof window.fbSaveUser === 'function' && _mig.totalHasanat > 0) {
-              window.fbSaveUser(user, Object.assign({}, _mig, { isGuest: false, updatedAt: Date.now() }));
-            }
-            if (typeof showToast === 'function') showToast('✅ تم تفعيل حسابك على كل أجهزتك');
-          }, () => {}); // لو الاسم محجوز بالفعل (الباسورد غلط) — نتجاهل بهدوء
-        }
-      });
-    }
-    return;
-  }
-
-  // ★ مستخدم Firebase (مفيش باسورد محلي) — تحقق من الـ blacklist على Firebase قبل الدخول
+  // ★ دايماً نمر على fbLogin عشان يتحقق من bypassAuth (المصدر الحقيقي للباسورد)
+  // الـ local check بيتعمل جوّا fbLogin لو مفيش إنترنت
   if (typeof window.fbLogin === 'function') {
+    showLoginErr('⏳ جاري التحقق...');
     window.fbLogin(user, pass,
       () => {
-        // ★ جهاز جديد (مفيش بيانات محلية): نكمّل الدخول بنفسنا من الداتا بيز.
-        //   ما نعتمدش بس على onAuthStateChanged، لأنه ممكن ما يتطلّقش لو جلسة
-        //   Firebase متسجّلة أصلاً لنفس المستخدم → فكان الدخول بيفضل واقف.
         if (typeof window._markAuthDone === 'function') window._markAuthDone();
         const _finishFresh = (realName, fbData) => {
+          const lData = users[user] || {};
           const merged = {
-            totalScore:   (fbData && fbData.totalScore)   || 0,
-            totalGames:   (fbData && fbData.totalGames)   || 0,
-            totalHasanat: (fbData && fbData.totalHasanat) || 0,
-            streak:       (fbData && fbData.streak)       || 0,
-            lastPlay:     (fbData && fbData.lastPlay)     || null,
+            totalScore:   Math.max((fbData && fbData.totalScore)   || 0, lData.totalScore   || 0),
+            totalGames:   Math.max((fbData && fbData.totalGames)   || 0, lData.totalGames   || 0),
+            totalHasanat: Math.max((fbData && fbData.totalHasanat) || 0, lData.totalHasanat || 0),
+            streak:       Math.max((fbData && fbData.streak)       || 0, lData.streak       || 0),
+            lastPlay:     (fbData && fbData.lastPlay) || lData.lastPlay || null,
+            name:         lData.name || (fbData && fbData.name) || realName || user,
+            email:        user,
           };
-          const ls = document.getElementById('loginScreen');
-          if (ls) ls.classList.add('hide');
-          // loginSuccess → _finishLogin هيستدعي fbSyncAllUserData لتحميل الغلطات/التقدم/المحفوظات
-          loginSuccess(realName, merged);
+          try {
+            const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+            _lu[user] = { ...(_lu[user]||{}), ...merged, password: btoa(pass) };
+            localStorage.setItem('nour_users', JSON.stringify(_lu));
+            localStorage.setItem('nour_last_user', user);
+          } catch(e) {}
+          document.getElementById('loginScreen').classList.add('hide');
+          loginSuccess(realName || user, merged);
+          if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
+            window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
+          }
         };
         if (typeof window.fbGetAccount === 'function') {
           window.fbGetAccount(user, (realName, fbData) => _finishFresh(realName || user, fbData));
         } else if (typeof window.fbGetUserData === 'function') {
           window.fbGetUserData(user, (fbData) => _finishFresh(user, fbData));
         } else {
-          _finishFresh(user, null);
+          _finishFresh(user, localData);
         }
       },
       (errMsg) => {
-        // Firebase فشل (باسورد غلط أو حساب غير موجود) → أظهر الخطأ مع توجيه
         currentUser = null; window.currentUser = null;
         document.getElementById('loginScreen').classList.remove('hide');
-        // لو الحساب مش متخزّن محليًا والخطأ "بيانات خاطئة" → غالبًا الحساب مش مسجّل أونلاين
-        if (!localData && /خاطئة/.test(errMsg || '')) {
-          showLoginErr('الاسم أو كلمة المرور غلط — ولو الحساب ده اتعمل قبل كده على جهاز واحد بس، سجّله من «حساب جديد» عشان يشتغل على كل أجهزتك.');
-        } else {
-          showLoginErr(errMsg);
-        }
+        showLoginErr(errMsg || 'الإيميل أو كلمة المرور خاطئة');
       }
     );
-  } else {
-    // بدون Firebase — مفيش حساب محلي يعني مش موجود
-    if (!localData) { showLoginErr('الحساب غير موجود'); return; }
-    document.getElementById('loginScreen').classList.add('hide');
-    loginSuccess(user, localData);
+    return;
   }
+
+  // Fallback لو Firebase مش متاح
+  if (!localData || !localData.password) { showLoginErr('الحساب غير موجود'); return; }
+  if (localData.password !== btoa(pass)) { showLoginErr('كلمة المرور خاطئة'); return; }
+  document.getElementById('loginScreen').classList.add('hide');
+  loginSuccess(user, localData);
 }
 
 function doRegister() {
@@ -3850,7 +3809,6 @@ function _finishLogin(username, isGuest) {
 
 function doLogout() {
   saveCurrentUser();
-  // ★ ألغِ أي دخول تلقائي معلّق عشان ما يرجعش يسجّلنا بعد الخروج
   window._pendingAutoLogin = null;
   try { clearTimeout(window._autoLoginFallbackTimer); } catch (e) {}
   if (typeof window.fbUnwatchMistakes === 'function') window.fbUnwatchMistakes();
@@ -3861,8 +3819,10 @@ function doLogout() {
   try { localStorage.removeItem('nour_last_user'); } catch(e) {}
   if (typeof window._resetAuthDone === 'function') window._resetAuthDone();
   if (typeof window.fbLogout === 'function') window.fbLogout();
+  // ★ أظهر شاشة الدخول مباشرة بدون goHome
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('show'));
+  document.getElementById('homeScreen') && document.getElementById('homeScreen').classList.add('show');
   document.getElementById('loginScreen').classList.remove('hide');
-  goHome();
 }
 
 function saveCurrentUser() {
