@@ -1552,10 +1552,11 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   window.fbSaveName = function(username, name) {
     if (!username || !name) return;
     const key = dataKey(username);
+    const ts = Date.now();
     const _doWrite = () => Promise.all([
-      set(ref(db, 'users/' + key + '/name'), name).catch(() => {}),
-      update(ref(db, 'users/' + key + '/data'), { name, updatedAt: Date.now() }).catch(() => {}),
-      update(ref(db, 'leaderboard/' + key), { name, updatedAt: Date.now() }).catch(() => {}),
+      // حفظ الاسم مع timestamp في ٣ مسارات
+      update(ref(db, 'users/' + key), { name, nameUpdatedAt: ts }).catch(() => {}),
+      update(ref(db, 'leaderboard/' + key), { name, nameUpdatedAt: ts, updatedAt: ts }).catch(() => {}),
     ]);
     if (auth.currentUser) { _doWrite(); return; }
     signInAnonymously(auth).then(_doWrite).catch(() => { _doWrite().catch(() => {}); });
@@ -1566,6 +1567,41 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     get(ref(db, 'users/' + key + '/name'))
       .then(s => cb(s.exists() ? s.val() : null))
       .catch(() => cb(null));
+  };
+
+  // ★ listener لتحديث الاسم لحظياً على كل الأجهزة
+  let _nameUnsub = null;
+  window.fbWatchName = function(username) {
+    if (_nameUnsub) { _nameUnsub(); _nameUnsub = null; }
+    if (!username) return;
+    const key = dataKey(username);
+    _nameUnsub = onValue(ref(db, 'leaderboard/' + key + '/name'), (snap) => {
+      if (!snap.exists()) return;
+      const fbName = snap.val();
+      if (!fbName || typeof fbName !== 'string' || fbName.includes('@')) return;
+      const _localTs = (() => { try { return parseInt(localStorage.getItem('nour_name_ts_' + username) || '0'); } catch(e) { return 0; } })();
+      // تحقق من timestamp في leaderboard
+      get(ref(db, 'leaderboard/' + key + '/nameUpdatedAt')).then(ts => {
+        const fbTs = ts.exists() ? ts.val() : 0;
+        if (fbTs <= _localTs) return; // المحلي أحدث
+        // Firebase أحدث — حدّث اللوجينة الحالية
+        if (window.currentUser && window.currentUser.username === username && window.currentUser.name !== fbName) {
+          window.currentUser.name = fbName;
+          currentUser = window.currentUser;
+          try {
+            localStorage.setItem('nour_name_' + username, fbName);
+            localStorage.setItem('nour_name_ts_' + username, String(fbTs));
+          } catch(e) {}
+          const el = document.getElementById('userNameDisplay');
+          if (el && !el.querySelector('input')) {
+            el.innerHTML = '👤 ' + fbName + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
+          }
+        }
+      }).catch(() => {});
+    });
+  };
+  window.fbUnwatchName = function() {
+    if (_nameUnsub) { _nameUnsub(); _nameUnsub = null; }
   };
 
   // ★ اقرأ الاسم من localStorage بكل الطرق
@@ -1908,7 +1944,20 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
         streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
         lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || (fbData && fbData.name && !fbData.name.includes('@') ? fbData.name : null) || (lbData && lbData.name && !lbData.name.includes('@') ? lbData.name : null) || (user && user.displayName && !user.displayName.includes('@') ? user.displayName : null) || '',
+        // ★ توحيد الاسم: ناخد الأحدث بين Firebase والمحلي (زي النقاط بالظبط)
+        name: (() => {
+          const _localName  = typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null;
+          const _localTs    = (() => { try { return JSON.parse(localStorage.getItem('nour_name_ts_' + realUsername) || '0'); } catch(e) { return 0; } })();
+          const _fbName     = fbName || (fbData && fbData.name && !fbData.name.includes('@') ? fbData.name : null) || (lbData && lbData.name && !lbData.name.includes('@') ? lbData.name : null);
+          const _fbTs       = (fbData && fbData.nameUpdatedAt) || (lbData && lbData.nameUpdatedAt) || 0;
+          const _googleName = (user && user.displayName && !user.displayName.includes('@')) ? user.displayName : null;
+          // لو Firebase أحدث → استخدمه وحدّث المحلي
+          if (_fbName && _fbTs > _localTs) {
+            try { localStorage.setItem('nour_name_' + realUsername, _fbName); localStorage.setItem('nour_name_ts_' + realUsername, String(_fbTs)); } catch(e) {}
+            return _fbName;
+          }
+          return _localName || _fbName || _googleName || '';
+        })(),
         email: realUsername,
       };
       const doIt = () => {
@@ -3806,8 +3855,9 @@ function _saveNameEdit() {
   // ★ حفظ في localStorage بثلاث طرق عشان نضمن الاسم ما يضيعش
   const _email = currentUser.username;
   try {
-    // ١. مفتاح مستقل للاسم
+    // ١. مفتاح مستقل للاسم مع timestamp
     localStorage.setItem('nour_name_' + _email, n);
+    localStorage.setItem('nour_name_ts_' + _email, String(Date.now()));
     // ٢. داخل nour_users
     const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
     if (!_lu[_email]) _lu[_email] = {};
@@ -3892,6 +3942,7 @@ function _finishLogin(username, isGuest) {
   const _el = document.getElementById('userNameDisplay');
   _el.innerHTML = '👤 ' + _disp + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
   if (typeof window.fbSignInAnon === 'function') window.fbSignInAnon();
+  if (typeof window.fbWatchName === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
@@ -3937,7 +3988,8 @@ function _finishLogin(username, isGuest) {
 
 function doLogout() {
   window._loggedOut = true;
-  window._cancelBgAuth = true; // ★ أوقف أي background Firebase auth
+  window._cancelBgAuth = true;
+  if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName(); // ★ أوقف أي background Firebase auth
   saveCurrentUser();
   window._pendingAutoLogin = null;
   try { clearTimeout(window._autoLoginFallbackTimer); } catch (e) {}
