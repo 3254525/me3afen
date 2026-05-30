@@ -1579,25 +1579,16 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       if (!snap.exists()) return;
       const fbName = snap.val();
       if (!fbName || typeof fbName !== 'string' || fbName.includes('@')) return;
-      const _localTs = (() => { try { return parseInt(localStorage.getItem('nour_name_ts_' + username) || '0'); } catch(e) { return 0; } })();
-      // تحقق من timestamp في leaderboard
-      get(ref(db, 'leaderboard/' + key + '/nameUpdatedAt')).then(ts => {
-        const fbTs = ts.exists() ? ts.val() : 0;
-        if (fbTs <= _localTs) return; // المحلي أحدث
-        // Firebase أحدث — حدّث اللوجينة الحالية
-        if (window.currentUser && window.currentUser.username === username && window.currentUser.name !== fbName) {
-          window.currentUser.name = fbName;
-          currentUser = window.currentUser;
-          try {
-            localStorage.setItem('nour_name_' + username, fbName);
-            localStorage.setItem('nour_name_ts_' + username, String(fbTs));
-          } catch(e) {}
-          const el = document.getElementById('userNameDisplay');
-          if (el && !el.querySelector('input')) {
-            el.innerHTML = '👤 ' + fbName + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
-          }
-        }
-      }).catch(() => {});
+      if (!window.currentUser || window.currentUser.username !== username) return;
+      if (window.currentUser.name === fbName) return; // مفيش تغيير
+      // ★ حدّث فوراً
+      window.currentUser.name = fbName;
+      currentUser = window.currentUser;
+      try { localStorage.setItem('nour_name_' + username, fbName); } catch(e) {}
+      const el = document.getElementById('userNameDisplay');
+      if (el && !el.querySelector('input')) {
+        el.innerHTML = '👤 ' + fbName + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
+      }
     });
   };
   window.fbUnwatchName = function() {
