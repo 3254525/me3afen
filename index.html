@@ -1552,11 +1552,12 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   window.fbSaveName = function(username, name) {
     if (!username || !name) return;
     const key = dataKey(username);
-    const ts = Date.now();
+    const ts  = Date.now();
     const _doWrite = () => Promise.all([
-      // حفظ الاسم مع timestamp في ٣ مسارات
-      update(ref(db, 'users/' + key), { name, nameUpdatedAt: ts }).catch(() => {}),
-      update(ref(db, 'leaderboard/' + key), { name, nameUpdatedAt: ts, updatedAt: ts }).catch(() => {}),
+      // ★ كتابة مباشرة على مسار الاسم — يـtrigger الـ onValue listener فوراً
+      set(ref(db, 'leaderboard/' + key + '/name'), name).catch(() => {}),
+      set(ref(db, 'leaderboard/' + key + '/nameUpdatedAt'), ts).catch(() => {}),
+      set(ref(db, 'users/' + key + '/name'), name).catch(() => {}),
     ]);
     if (auth.currentUser) { _doWrite(); return; }
     signInAnonymously(auth).then(_doWrite).catch(() => { _doWrite().catch(() => {}); });
