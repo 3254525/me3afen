@@ -9291,9 +9291,19 @@ function _showMultiResults() {
   const _showUnified = () => {
     const _resEl = document.getElementById('multiResults');
     if (!_resEl || _resEl.style.display === 'none') return;
-    const _doRender = (roomData) => {
+    const _doRender = (roomData, finalScoresData) => {
       if (!_resEl || _resEl.style.display === 'none') return;
       const pl = roomData && roomData.players ? { ...roomData.players } : {};
+      // ★ دمج finalScores (الأضمن — مش بيتمسح بالـ reset)
+      if (finalScoresData) {
+        Object.entries(finalScoresData).forEach(([fpk, fd]) => {
+          if (!fd) return;
+          pl[fpk] = pl[fpk] || {};
+          pl[fpk].name       = pl[fpk].name || fd.name || 'لاعب';
+          pl[fpk].finalScore = Math.max(pl[fpk].finalScore || 0, fd.score || 0);
+          pl[fpk].score      = Math.max(pl[fpk].score || 0, fd.score || 0);
+        });
+      }
       // أضف/حدّث نقطة اللاعب الحالي بالأعلى
       if (pk) {
         pl[pk] = pl[pk] || {};
@@ -9330,9 +9340,14 @@ function _showMultiResults() {
       ).join('');
     };
     if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
-      window.fbMulti.getRoom(multiState.roomCode, _doRender);
+      // جيب finalScores + room معاً
+      window.fbMulti.getFinalScores(multiState.roomCode, (finalScores) => {
+        window.fbMulti.getRoom(multiState.roomCode, (room) => {
+          _doRender(room, finalScores);
+        });
+      });
     } else {
-      _doRender(window._multiRoomCache);
+      _doRender(window._multiRoomCache, null);
     }
   };
 
@@ -9426,7 +9441,6 @@ function multiPlayAgain() {
       currentQ: 0,
       questions: multiState.questions.map(compressQ),
       totalQ: multiState.totalQ,
-      finalScores: null, // ★ مسح نتائج الجولة السابقة
     }).catch(() => {});
     Object.keys(room.players || {}).forEach(pk => {
       window.fbMulti.updatePlayer(multiState.roomCode, pk, { score: 0, answered: false, done: false, finalScore: 0, finalName: null }).catch(() => {});
