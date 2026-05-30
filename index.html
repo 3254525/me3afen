@@ -3624,9 +3624,17 @@ function _sendForgotEmail() {
     window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
   }
 
-  // ★ أغلق الـ modal - المستخدم لسا داخل ومحتاجش logout أو reload
   closeForgotPassModal();
-  showToast('✅ تم تغيير كلمة المرور بنجاح');
+  showToast('✅ تم تغيير كلمة المرور');
+
+  // ★ لو المستخدم داخل بالفعل — خلّيه داخل بدون أي تغيير
+  // لو مش داخل (forgot password من شاشة الدخول) — دخّله فوراً بالباسورد الجديد
+  if (!window.currentUser || !window.currentUser.username) {
+    const _lu = (() => { try { return JSON.parse(localStorage.getItem('nour_users')||'{}'); } catch(e) { return {}; } })();
+    const _data = _lu[email] || {};
+    window._loggedOut = false;
+    if (typeof loginSuccess === 'function') loginSuccess(email, _data);
+  }
 }
 
 window.doForgotPassword = doForgotPassword;
