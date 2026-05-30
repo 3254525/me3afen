@@ -1417,8 +1417,6 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       email, passHash: _passHash, updatedAt: Date.now(),
     });
 
-    const _updateAuthPass = () => import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js')
-      .then(({ updatePassword }) => updatePassword(auth.currentUser, padPass(newPass)).catch(() => {}));
 
     // ١. جرّب الباسورد الجديد — لو سبق غيّروه
     signInWithEmailAndPassword(auth, toFbEmail(email), padPass(newPass))
@@ -1438,7 +1436,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
           : Promise.reject('no-old-pass');
 
         _tryOldPass
-          .then(() => Promise.all([_writeBypass(), _updateAuthPass()]))
+          .then(() => _writeBypass())
           .then(() => onSuccess('firebase'))
           .catch(() => {
             // ٣. مفيش session — احفظ محلياً فقط وادخّله
@@ -1545,6 +1543,18 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     get(ref(db, 'users/' + key + '/name'))
       .then(s => cb(s.exists() ? s.val() : null))
       .catch(() => cb(null));
+  };
+
+  // ★ اقرأ الاسم من localStorage بكل الطرق
+  window._getStoredName = function(email) {
+    if (!email) return null;
+    try {
+      const direct = localStorage.getItem('nour_name_' + email);
+      if (direct && direct.trim()) return direct.trim();
+      const users = JSON.parse(localStorage.getItem('nour_users') || '{}');
+      if (users[email] && users[email].name && users[email].name.trim()) return users[email].name.trim();
+    } catch(e) {}
+    return null;
   };
 
   // ══════════════════════════════════════════════════════════
@@ -1813,7 +1823,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     // ★ لو اليوزر طلب logout صريح — منعملش أي دخول تلقائي
     if (!user) {
       _authDone = false;
-      if (window._isLoggingOut) return; // لو لسه بيخرج — ما نعملش أي دخول تلقائي
+
       // ★ لو Firebase قال "مفيش مستخدم" وفيه pending autoLogin — الغيه
       if (window._pendingAutoLogin) {
         window._pendingAutoLogin = null;
@@ -1830,8 +1840,9 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       return;
     }
     if (_authDone) return;
-    if (window._registering) return;  // جاري تسجيل حساب جديد — لا تتدخل
-    if (user.isAnonymous) return;     // anonymous فقط للـ multiplayer — مش حساب حقيقي
+    if (window._loggedOut) return;    // ★ اليوزر عمل logout واضح — ما ندخلوش تلقائياً
+    if (window._registering) return;  // جاري تسجيل حساب جديد
+    if (user.isAnonymous) return;     // anonymous فقط للـ multiplayer
 
     // ★ لو في pending autoLogin — أكّده وامسح الـ timer
     if (window._pendingAutoLogin) {
@@ -1872,7 +1883,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
         streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
         lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-        name: fbName || _localData.name || fbData.name || (user && user.displayName) || '',
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || fbData.name || (user && user.displayName) || '',
         email: realUsername,
       };
       const doIt = () => {
@@ -3263,7 +3274,7 @@ window.togglePw = togglePw;
 })();
 
 function doLogin() {
-  window._isLoggingOut = false; // ★ اليوزر بيحاول يدخل — امسح علم الخروج
+  window._loggedOut = false;
   const user = document.getElementById('loginUser').value.trim().toLowerCase();
   const pass = document.getElementById('loginPass').value;
   if (!user || !pass) { showLoginErr('أدخل الإيميل وكلمة المرور'); return; }
@@ -3289,7 +3300,7 @@ function doLogin() {
             streak:       Math.max((fbData && fbData.streak)       || 0, lData.streak       || 0),
             lastPlay:     (fbData && fbData.lastPlay) || lData.lastPlay || null,
             // ★ الاسم: المسار المستقل أولاً، ثم localStorage، ثم data
-            name: fbNameOverride || lData.name || (fbData && fbData.name) || realName || user,
+            name: (typeof window._getStoredName === 'function' ? window._getStoredName(user) : null) || fbNameOverride || lData.name || (fbData && fbData.name) || realName || (user && user.split('@')[0]) || user,
             email: user,
           };
           try {
@@ -3396,6 +3407,7 @@ function doRegister() {
 
 // ★ تسجيل الدخول بـ Google (popup)
 function doGoogleSignIn() {
+  window._loggedOut = false;
   if (typeof window.fbGoogleSignIn !== 'function') { showLoginErr('⏳ جاري التحميل — حاول تاني'); return; }
   window.fbGoogleSignIn(({ email, name }) => {
     const users = getUsers();
@@ -3491,7 +3503,7 @@ function _sendForgotEmail() {
         ...(fbData || {}),
         ...lData,
         email,
-        name: (fbData && fbData.name) || lData.name || email.split('@')[0],
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (fbData && fbData.name) || lData.name || email.split('@')[0],
         isGuest: false,
         password: btoa(newPass),
         totalScore:   Math.max((fbData && fbData.totalScore) || 0, lData.totalScore || 0),
@@ -3733,19 +3745,36 @@ function _saveNameEdit() {
   if (!inp) return;
   const n = inp.value.trim();
   if (!n || n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
-  currentUser.name = n; window.currentUser = currentUser;
-  // ١. حفظ في localStorage فوراً
+  if (!currentUser || !currentUser.username) return;
+
+  currentUser.name = n;
+  window.currentUser = currentUser;
+
+  // ★ حفظ في localStorage بثلاث طرق عشان نضمن الاسم ما يضيعش
+  const _email = currentUser.username;
   try {
+    // ١. مفتاح مستقل للاسم
+    localStorage.setItem('nour_name_' + _email, n);
+    // ٢. داخل nour_users
     const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
-    if (!_lu[currentUser.username]) _lu[currentUser.username] = {};
-    _lu[currentUser.username].name = n;
+    if (!_lu[_email]) _lu[_email] = {};
+    _lu[_email].name = n;
     localStorage.setItem('nour_users', JSON.stringify(_lu));
   } catch(e) {}
+
   saveCurrentUser();
-  // ٢. حفظ في Firebase — مسار مستقل للاسم (الأسرع والأضمن)
-  if (typeof window.fbSaveName === 'function') window.fbSaveName(currentUser.username, n);
-  // ٣. تحديث لوحة الشرف
-  if (typeof window.fbSaveUser === 'function') window.fbSaveUser(currentUser.username, { totalHasanat: currentUser.totalHasanat||0, totalScore: currentUser.totalScore||0, totalGames: currentUser.totalGames||0, isGuest: false, name: n });
+
+  // ★ حفظ في Firebase (مسار مستقل + leaderboard)
+  if (typeof window.fbSaveName === 'function') window.fbSaveName(_email, n);
+  if (typeof window.fbSaveUser === 'function') {
+    window.fbSaveUser(_email, {
+      name: n, isGuest: false,
+      totalHasanat: currentUser.totalHasanat||0,
+      totalScore: currentUser.totalScore||0,
+      totalGames: currentUser.totalGames||0,
+    });
+  }
+
   const el = document.getElementById('userNameDisplay');
   if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
   showToast('✅ تم تغيير الاسم: ' + n);
@@ -3854,7 +3883,7 @@ function _finishLogin(username, isGuest) {
 }
 
 function doLogout() {
-  window._isLoggingOut = true; // ★ منع onAuthStateChanged من إعادة الدخول
+  window._loggedOut = true; // ★ منع _continueAuthLogin بعد الخروج
   saveCurrentUser();
   window._pendingAutoLogin = null;
   try { clearTimeout(window._autoLoginFallbackTimer); } catch (e) {}
