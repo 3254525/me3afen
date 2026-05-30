@@ -1605,46 +1605,6 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     if (_nameUnsub) { _nameUnsub(); _nameUnsub = null; }
   };
 
-  // ★ listener لتحديث نقاط المستخدم لحظياً على كل الأجهزة
-  let _dataUnsub = null;
-  window.fbWatchUserData = function(username) {
-    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
-    if (!username) return;
-    const key = dataKey(username);
-    _dataUnsub = onValue(ref(db, 'users/' + key + '/data'), (snap) => {
-      if (!snap.exists()) return;
-      const fbData = snap.val();
-      if (!fbData) return;
-      const cu = window.currentUser;
-      if (!cu || cu.username !== username) return;
-      // ★ خذ الأعلى دايماً (مش بنخسر نقاط)
-      const changed =
-        (fbData.totalHasanat || 0) > (cu.totalHasanat || 0) ||
-        (fbData.totalScore   || 0) > (cu.totalScore   || 0) ||
-        (fbData.totalGames   || 0) > (cu.totalGames   || 0);
-      if (!changed) return;
-      cu.totalHasanat = Math.max(cu.totalHasanat || 0, fbData.totalHasanat || 0);
-      cu.totalScore   = Math.max(cu.totalScore   || 0, fbData.totalScore   || 0);
-      cu.totalGames   = Math.max(cu.totalGames   || 0, fbData.totalGames   || 0);
-      window.currentUser = cu;
-      // حفظ في localStorage
-      try {
-        const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
-        if (_lu[username]) {
-          _lu[username].totalHasanat = cu.totalHasanat;
-          _lu[username].totalScore   = cu.totalScore;
-          _lu[username].totalGames   = cu.totalGames;
-          localStorage.setItem('nour_users', JSON.stringify(_lu));
-        }
-      } catch(e) {}
-      // تحديث الـ UI فوراً
-      if (typeof updateHomeStats === 'function') updateHomeStats();
-    });
-  };
-  window.fbUnwatchUserData = function() {
-    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
-  };
-
   // ★ اقرأ الاسم من localStorage بكل الطرق
   window._getStoredName = function(email) {
     if (!email) return null;
@@ -2331,26 +2291,6 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     } catch (e) { window._renderLbFromData({}); }
   }
   _attachLbListener();
-
-  // ★ تنظيف تلقائي: مسح الضيوف من الداتا بيز كل ٣ أيام
-  (function _cleanOldGuests() {
-    const _3days = 3 * 24 * 60 * 60 * 1000;
-    const _now   = Date.now();
-    get(ref(db, LB_PATH)).then(snap => {
-      if (!snap.exists()) return;
-      const data = snap.val();
-      Object.entries(data).forEach(([key, entry]) => {
-        if (!entry) return;
-        // ضيف قديم: isGuest=true أو key بيبدأ بـ guest__ + updatedAt أكتر من ٣ أيام
-        const isGuest = entry.isGuest || String(key).startsWith('guest__');
-        if (!isGuest) return;
-        const lastSeen = entry.updatedAt || entry.lastPlay || 0;
-        if (_now - lastSeen > _3days) {
-          remove(ref(db, LB_PATH + key)).catch(() => {});
-        }
-      });
-    }).catch(() => {});
-  })();
 
   // ─── migration: انقل bيانات nour_lb للمسار الجديد (مرة واحدة) ───
   get(ref(db, 'nour_lb')).then(snap => {
@@ -4107,8 +4047,7 @@ function _finishLogin(username, isGuest) {
   const _el = document.getElementById('userNameDisplay');
   _el.innerHTML = '👤 ' + _disp + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
   if (typeof window.fbSignInAnon === 'function' && !isGuest) window.fbSignInAnon();
-  if (typeof window.fbWatchName     === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
-  if (typeof window.fbWatchUserData  === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchUserData(username);
+  if (typeof window.fbWatchName === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
@@ -6216,7 +6155,7 @@ function buildQuestions() {
 // ===== بناء أسئلة عشوائية من QURAN_LOCAL (للمستويات all) =====
 function buildQuestionsFromLocal(count) {
   const lvl = LEVEL_DEFS[state.level];
-  // اجمع كل الآيات المتاحة من QURAN_LOCAL + QURAN_DB معاً (أقصى تغطية)
+  // اجمع كل الآيات المتاحة من القرآن كله
   const allAyahs = [];
   for (let surahNum = 1; surahNum <= 114; surahNum++) {
     const ayahs = fetchSurahAyahs(surahNum);
@@ -6231,15 +6170,6 @@ function buildQuestionsFromLocal(count) {
       }
     });
   }
-  // ★ أضف سور QURAN_DB اللي مش موجودة في QURAN_LOCAL
-  const _localSurahs = new Set(allAyahs.map(a => a.surahName));
-  const _dbPool = Object.values(QURAN_DB).flat();
-  _dbPool.forEach(q => {
-    if (q.surah && !_localSurahs.has(q.surah)) {
-      allAyahs.push({ surahNum: 0, surahName: q.surah, _fromDB: true, _dbQ: q });
-    }
-  });
-
   if (allAyahs.length === 0) return null;
 
   // خلط عشوائي حقيقي
@@ -6251,12 +6181,7 @@ function buildQuestionsFromLocal(count) {
   const picked = allAyahs.slice(0, Math.min(count, allAyahs.length));
 
   // نبني كل سؤال بنفس منطق loadAndBuildSurahQuestions
-  const questions = picked.map(({ surahNum, surahName, ayah, _fromDB, _dbQ }) => {
-    // ★ عناصر من QURAN_DB: حوّلها لنفس الـ format
-    if (_fromDB && _dbQ) {
-      return { surah: _dbQ.surah, ayah: _dbQ.ayah, blank: _dbQ.blank,
-               wrong: _dbQ.wrong || [], qtype: 'blank', fromDB: true };
-    }
+  const questions = picked.map(({ surahNum, surahName, ayah }) => {
     const words = ayah.text.trim().split(' ');
     const { blankIdx, blankCount } = pickBlankByLevel(words, lvl);
     const blank = words.slice(blankIdx, blankIdx + blankCount).join(' ');
@@ -8548,13 +8473,13 @@ function multiCreateRoom() {
         if (!allSurah) questions = questions.slice(0, parseInt(qCountRaw) || 20);
       } else {
         const qCount = parseInt(qCountRaw) || 20;
-        // ★ عشوائي حقيقي من كل QURAN_DB (كل المستويات + كل السور)
-        const _allQ = Object.values(QURAN_DB).flat();
-        for (let i = _allQ.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [_allQ[i], _allQ[j]] = [_allQ[j], _allQ[i]];
+        const allNums = Object.keys(QURAN_LOCAL).map(Number).sort(() => Math.random()-0.5);
+        for (const num of allNums) {
+          if (questions.length >= qCount * 3) break;
+          const qs = buildReviewQuestions(SURAHS_META[num-1]?.[0] || '');
+          questions = questions.concat(qs);
         }
-        questions = _allQ.slice(0, qCount);
+        questions = questions.sort(() => Math.random()-0.5).slice(0, qCount);
       }
     } finally {
       state.level = _savedLevel;
@@ -8788,25 +8713,14 @@ function _startMultiGame() {
   multiState.myScore = 0;
   multiState._peakScore = 0;
   multiState._scoreSavedThisRound = false;
-  multiState._startedAt = Date.now();
-  multiState._roundId = Date.now();
+  multiState._startedAt = Date.now(); // ★ نحفظ وقت البداية للكشف عن جولة جديدة
+  // ★ تصفير كل الـ caches عشان ما يظهرش نقاط الجولة السابقة
   window._lockedScores = {};
   window._prevMultiScores = {};
-  // ★ تصفير scores في الـ cache المحلي عشان multiLiveScores تبدأ من ٠ فوراً
-  if (window._multiRoomCache && window._multiRoomCache.players) {
-    Object.keys(window._multiRoomCache.players).forEach(function(k) {
-      if (window._multiRoomCache.players[k]) {
-        window._multiRoomCache.players[k].score    = 0;
-        window._multiRoomCache.players[k].answered = false;
-        window._multiRoomCache.players[k].done     = false;
-      }
-    });
-  }
+  // تصفير عداد النقاط على الشاشة
   const scoreEl = document.getElementById('multiMyScore');
   if (scoreEl) scoreEl.textContent = toArabicNum(0);
-  document.getElementById('multiResults').style.display  = 'none';
-  document.getElementById('multiLiveScores').innerHTML   = '';
-  document.getElementById('multiWaiting').style.display  = 'none';
+  document.getElementById('multiWaiting').style.display = 'none';
   document.getElementById('multiGameArea').style.display = 'block';
   document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
   _renderMultiQuestion();
@@ -9039,16 +8953,6 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
   }
   document.getElementById('multiMyScore').textContent = toArabicNum(multiState.myScore);
 
-  // ★ تحديث فوري للـ cache المحلي عشان _updateMultiLiveScores تعكس السكور الجديد بدون انتظار Firebase
-  if (window._multiRoomCache && window._multiRoomCache.players) {
-    const _pk = multiState.playerKey || multiState.playerName;
-    if (window._multiRoomCache.players[_pk]) {
-      window._multiRoomCache.players[_pk].score    = multiState.myScore;
-      window._multiRoomCache.players[_pk].answered = true;
-    }
-  }
-  _updateMultiLiveScores();
-
   wrap.querySelectorAll('button').forEach(b => {
     const ch = b.dataset.ch;
     if (_norm(ch) === _norm(actualCorrect)) b.style.background = 'rgba(46,175,120,0.25)', b.style.borderColor = 'var(--emerald-light)', b.style.color = '#7DFFC9';
@@ -9186,8 +9090,6 @@ function _showMultiResults() {
   clearTimeout(multiState.answerTimer);
   clearInterval(multiState.questionTimer);
   multiState.phase = 'results';
-  // ★ session ID يمنع كتابة نتايج جولة قديمة فوق جولة جديدة
-  const _thisRoundId = multiState._roundId = Date.now();
 
   const pk = multiState.playerKey || multiState.playerName;
   const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
@@ -9198,18 +9100,14 @@ function _showMultiResults() {
   if (typeof window.fbMulti !== 'undefined') {
     if (typeof window.fbMulti.saveFinalScore === 'function') {
       const _saveDedicated = (attempt) => {
-        if (multiState._roundId !== _thisRoundId) return; // ★ منع الكتابة بعد جولة جديدة
         const p = window.fbMulti.saveFinalScore(multiState.roomCode, pk, _trueScore, _myFinalName);
         if (p && p.catch) {
-          p.catch(() => {
-            if (attempt < 4 && multiState._roundId === _thisRoundId)
-              setTimeout(() => _saveDedicated(attempt + 1), 400 * attempt);
-          });
+          p.catch(() => { if (attempt < 4) setTimeout(() => _saveDedicated(attempt + 1), 400 * attempt); });
         }
       };
       _saveDedicated(1);
-      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 1500);
-      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 4000);
+      setTimeout(() => _saveDedicated(1), 1500);
+      setTimeout(() => _saveDedicated(1), 4000);
     }
 
     const _finalScore = {
@@ -9220,18 +9118,14 @@ function _showMultiResults() {
       finalName:  _myFinalName,
     };
     const _writeFinal = (attempt) => {
-      if (multiState._roundId !== _thisRoundId) return; // ★ منع الكتابة بعد جولة جديدة
       const p = window.fbMulti.updatePlayer(multiState.roomCode, pk, _finalScore);
       if (p && p.catch) {
-        p.catch(() => {
-          if (attempt < 3 && multiState._roundId === _thisRoundId)
-            setTimeout(() => _writeFinal(attempt + 1), 500 * attempt);
-        });
+        p.catch(() => { if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt); });
       }
     };
-    if (multiState._roundId === _thisRoundId) _writeFinal(1);
-    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 2000);
-    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 5000);
+    _writeFinal(1);
+    setTimeout(() => _writeFinal(1), 2000);
+    setTimeout(() => _writeFinal(1), 5000);
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
     }
@@ -9274,87 +9168,117 @@ function _showMultiResults() {
 
   document.getElementById('multiGameArea').style.display = 'none';
   document.getElementById('multiResults').style.display = 'block';
-  document.getElementById('multiFinalScores').innerHTML =
-    '<div style="text-align:center;padding:20px;color:rgba(245,217,139,0.4);font-size:13px;font-family:Cairo,sans-serif;">⏳ جاري تحميل النتائج...</div>';
-  document.getElementById('multiTrophyEmoji').textContent = '⏳';
-  document.getElementById('multiWinnerName').textContent  = '';
-  document.getElementById('multiWinnerMsg').textContent   = '';
 
-  const medals    = ['🥇','🥈','🥉','🎖️'];
-  const _bestScore = (p) => Math.max(
-    (p && typeof p.finalScore === 'number') ? p.finalScore : 0,
-    (p && typeof p.score     === 'number') ? p.score      : 0
-  );
-  const _bestName  = (p) => (p && (p.finalName || p.name)) || 'لاعب';
-
-  // ★ دالة عرض النتايج من Firebase — نفس النتيجة لكل اللاعبين
-  const _showUnified = () => {
-    const _resEl = document.getElementById('multiResults');
-    if (!_resEl || _resEl.style.display === 'none') return;
-    const _doRender = (roomData, finalScoresData) => {
-      if (!_resEl || _resEl.style.display === 'none') return;
-      const pl = roomData && roomData.players ? { ...roomData.players } : {};
-      // ★ دمج finalScores (الأضمن — مش بيتمسح بالـ reset)
-      if (finalScoresData) {
-        Object.entries(finalScoresData).forEach(([fpk, fd]) => {
-          if (!fd) return;
-          pl[fpk] = pl[fpk] || {};
-          pl[fpk].name       = pl[fpk].name || fd.name || 'لاعب';
-          pl[fpk].finalScore = Math.max(pl[fpk].finalScore || 0, fd.score || 0);
-          pl[fpk].score      = Math.max(pl[fpk].score || 0, fd.score || 0);
-        });
-      }
-      // أضف/حدّث نقطة اللاعب الحالي بالأعلى
-      if (pk) {
-        pl[pk] = pl[pk] || {};
-        pl[pk].finalScore = Math.max(_bestScore(pl[pk]), _trueScore);
-        pl[pk].score      = pl[pk].finalScore;
-        pl[pk].name       = pl[pk].name || multiState.playerName ||
-          (currentUser && (currentUser.name || currentUser.username)) || 'أنت';
-      }
-      const sorted = Object.entries(pl)
-        .filter(([, p]) => p != null)
-        .sort((a, b) => _bestScore(b[1]) - _bestScore(a[1]));
-      if (!sorted.length) return;
-      const winner    = sorted[0];
-      const isWinner  = winner[0] === pk;
-      const tEl = document.getElementById('multiTrophyEmoji');
-      const nEl = document.getElementById('multiWinnerName');
-      const mEl = document.getElementById('multiWinnerMsg');
-      const sEl = document.getElementById('multiFinalScores');
-      if (tEl) tEl.textContent = isWinner ? '🏆' : '🎉';
-      if (nEl) nEl.textContent = _bestName(winner[1]);
-      if (mEl) mEl.textContent = isWinner
-        ? 'أنت الفائز! بارك الله فيك 🌟'
-        : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
-      if (sEl) sEl.innerHTML = sorted.map(([u, p], i) =>
-        `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;
-          background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;
-          margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
-          <span style="font-size:22px;">${medals[i]||'👤'}</span>
-          <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">
-            ${_bestName(p)}${u===pk?' (أنت)':''}</span>
-          <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">
-            ${toArabicNum(_bestScore(p))}</span>
-        </div>`
-      ).join('');
-    };
-    if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
-      // جيب finalScores + room معاً
-      window.fbMulti.getFinalScores(multiState.roomCode, (finalScores) => {
-        window.fbMulti.getRoom(multiState.roomCode, (room) => {
-          _doRender(room, finalScores);
-        });
-      });
-    } else {
-      _doRender(window._multiRoomCache, null);
-    }
+  // ★★ نظام النقاط الـmonotonic: النتيجة المعروضة مرة متنزلش أبدًا.
+  //    لو لاعب ظهر بـ٥٠، يفضل ٥٠ حتى لو قراءة لاحقة رجّعت صفر (بسبب reset/تأخير شبكة).
+  //    ده بيحل المشكلة نهائيًا من ناحية العرض.
+  window._lockedScores = {}; // reset لكل نتيجة جديدة
+  const _recordMax = (key, val) => {
+    window._lockedScores[key] = Math.max(window._lockedScores[key] || 0, val || 0);
+    return window._lockedScores[key];
   };
 
-  // جيب النتايج من Firebase بعد 600ms (وقت كافي للكتابات توصل)
-  setTimeout(_showUnified, 600);
-  // وتاني مرة بعد 3 ثواني للمتأخرين
-  setTimeout(_showUnified, 3000);
+  // ★ helpers: نختار أفضل قيمة متاحة لكل لاعب (الأولوية لـfinalScore اللي مفيش حاجة تكتب عليه)
+  const _bestScore = (p) => Math.max(
+    (p && typeof p.finalScore === 'number') ? p.finalScore : 0,
+    (p && typeof p.score === 'number') ? p.score : 0
+  );
+  const _bestName = (p) => (p && (p.finalName || p.name)) || 'لاعب';
+
+  const finalRoom = window._multiRoomCache;
+  const players = finalRoom ? { ...(finalRoom.players || {}) } : {};
+  // ★ _trueScore محسوب فوق — نستخدمه هنا للعرض
+  if (pk) {
+    const _prev = players[pk] || {};
+    players[pk] = {
+      ..._prev,
+      name:       _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'أنت') : _bestName(_prev),
+      finalScore: Math.max(_bestScore(_prev), _trueScore),
+      score:      Math.max(_bestScore(_prev), _trueScore),
+    };
+  }
+  // سجّل أعلى قيمة لكل لاعب (monotonic)
+  Object.entries(players).forEach(([u, p]) => { if (p != null) _recordMax(u, _bestScore(p)); });
+  const sorted = Object.entries(players).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
+  const medals = ['🥇','🥈','🥉','🎖️'];
+
+  const winner = sorted[0];
+  const isWinner = winner && winner[0] === pk;
+  document.getElementById('multiTrophyEmoji').textContent = isWinner ? '🏆' : '🎉';
+  document.getElementById('multiWinnerName').textContent = winner ? _bestName(winner[1]) : '';
+  document.getElementById('multiWinnerMsg').textContent = isWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
+
+  document.getElementById('multiFinalScores').innerHTML = sorted.map(([u, p], i) =>
+    `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
+      <span style="font-size:22px;">${medals[i]||'👤'}</span>
+      <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
+      <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
+    </div>`
+  ).join('');
+
+  // ★ بعد ثانية، نجيب أحدث بيانات من Firebase ونعيد العرض عشان كل اللاعيبة يشوفوا نفس النتيجة
+  //    (ده بيحل مشكلة التضارب لو كتابة لاعب على Firebase وصلت متأخرة)
+  if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
+    const _refreshResults = (attempt) => {
+      // ★★ نقرأ من المسار المخصّص للنتايج النهائية أولاً (الأقوى والأضمن)
+      const _readFinals = (cb) => {
+        if (typeof window.fbMulti.getFinalScores === 'function') {
+          window.fbMulti.getFinalScores(multiState.roomCode, cb);
+        } else cb(null);
+      };
+      _readFinals((finalScores) => {
+        window.fbMulti.getRoom(multiState.roomCode, (freshRoom) => {
+          // ★ ندمج المصدرين: نقاط نهائية مستقلة (الأولوية) + بيانات اللاعبين العادية
+          const freshPlayers = (freshRoom && freshRoom.players) ? { ...freshRoom.players } : {};
+          // ندمج بيانات النقاط النهائية (المسار المستقل) فوق أي حاجة
+          if (finalScores) {
+            Object.entries(finalScores).forEach(([fpk, fdata]) => {
+              if (!fdata) return;
+              freshPlayers[fpk] = {
+                ...(freshPlayers[fpk] || {}),
+                name: (freshPlayers[fpk] && freshPlayers[fpk].name) || fdata.name || 'لاعب',
+                finalName: fdata.name,
+                finalScore: fdata.score || 0,
+                score: Math.max((freshPlayers[fpk] && freshPlayers[fpk].score) || 0, fdata.score || 0),
+              };
+            });
+          }
+          if (freshRoom) window._multiRoomCache = freshRoom;
+          // override لنقطة اللاعب نفسه — مضمونة من المصدر المحلي
+          if (pk) {
+            const _prev = freshPlayers[pk] || {};
+            freshPlayers[pk] = {
+              ..._prev,
+              name:  _bestName(_prev) === 'لاعب' ? (multiState.playerName || (currentUser && currentUser.username) || 'أنت') : _bestName(_prev),
+              finalScore: Math.max(_bestScore(_prev), _trueScore),
+              score:      Math.max(_bestScore(_prev), _trueScore),
+            };
+          }
+          const freshSorted = Object.entries(freshPlayers).filter(([, p]) => p != null).sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
+          const freshWinner = freshSorted[0];
+          const freshIsWinner = freshWinner && freshWinner[0] === pk;
+          const winnerEl = document.getElementById('multiWinnerName');
+          const trophyEl = document.getElementById('multiTrophyEmoji');
+          const msgEl    = document.getElementById('multiWinnerMsg');
+          if (trophyEl) trophyEl.textContent = freshIsWinner ? '🏆' : '🎉';
+          if (winnerEl) winnerEl.textContent = freshWinner ? _bestName(freshWinner[1]) : '';
+          if (msgEl) msgEl.textContent = freshIsWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
+          const scoresEl = document.getElementById('multiFinalScores');
+          if (scoresEl) scoresEl.innerHTML = freshSorted.map(([u, p], i) =>
+            `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
+              <span style="font-size:22px;">${medals[i]||'👤'}</span>
+              <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
+              <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
+            </div>`
+          ).join('');
+        });
+      });
+    };
+    // إعادة عرض ٣ مرات: ١ثانية، ٣ثواني، ٦ثواني — عشان نلاقي كل اللاعيبة رفعوا finalScore
+    setTimeout(() => _refreshResults(1), 1000);
+    setTimeout(() => _refreshResults(2), 3000);
+    setTimeout(() => _refreshResults(3), 6000);
+  }
 }
 
 // يعيد بناء أسئلة جديدة بنفس إعدادات الغرفة (نفس السورة/العدد/المستوى)
@@ -9370,13 +9294,12 @@ function _rebuildMultiQuestions(room) {
     if (surahVal) {
       questions = buildReviewQuestions(surahVal).slice(0, qCount);
     } else {
-      // ★ عشوائي حقيقي من كل QURAN_DB
-      const _allQ2 = Object.values(QURAN_DB).flat();
-      for (let i = _allQ2.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [_allQ2[i], _allQ2[j]] = [_allQ2[j], _allQ2[i]];
+      const allNums = Object.keys(QURAN_LOCAL).map(Number).sort(() => Math.random() - 0.5);
+      for (const num of allNums) {
+        if (questions.length >= qCount * 3) break;
+        questions = questions.concat(buildReviewQuestions(SURAHS_META[num - 1]?.[0] || ''));
       }
-      questions = _allQ2.slice(0, qCount);
+      questions = questions.sort(() => Math.random() - 0.5).slice(0, qCount);
     }
   } catch (e) {} finally {
     state.level = _savedLevel;
@@ -9389,25 +9312,27 @@ function multiPlayAgain() {
   clearInterval(multiState.questionTimer);
   clearTimeout(multiState.answerTimer);
 
-  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
-  if (!room) { showMultiScreen(); return; }
-
-  // ★ منع الضغط المزدوج — لو الغرفة بالفعل في playing انتظر الـ listener
-  if (room.phase === 'playing') {
-    showToast('⏳ اللعبة شغّالة...');
+  // غير المضيف: يفضل في النتايج ويستنى المضيف — ما يرجعش لقاعة الانتظار
+  if (!multiState.isHost) {
+    const btn = document.getElementById('multiPlayAgainBtn');
+    if (btn) {
+      btn.textContent = '⏳ في انتظار المضيف...';
+      btn.disabled = true;
+      btn.style.opacity = '0.6';
+      btn.style.cursor = 'not-allowed';
+    }
+    // ابعت إشارة إنك مستعد
+    if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
+      const pk = multiState.playerKey || multiState.playerName;
+      window.fbMulti.updatePlayer(multiState.roomCode, pk, { requestRematch: true, lastSeen: Date.now() }).catch(() => {});
+    }
+    showToast('⏳ في انتظار المضيف يبدأ جولة جديدة...');
     return;
   }
 
-  // ★ إخفاء النتايج القديمة فوراً لكل من ضغط الزرار
-  const _resEl = document.getElementById('multiResults');
-  if (_resEl) {
-    _resEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;font-size:15px;">⏳ جاري تحضير الجولة الجديدة...</div>';
-  }
-
-  // ★ أي لاعب يقدر يبدأ — الأول اللي بيدوس بيكتب على Firebase
-  // الباقيين بيشوفوا phase=playing من الـ listener ويبدأوا تلقائي
-  const btn = document.getElementById('multiPlayAgainBtn');
-  if (btn) { btn.textContent = '⏳ جاري...'; btn.disabled = true; }
+  // المضيف: نفس الإعدادات + أسئلة جديدة + تصفير النقاط — وتبدأ الجولة فورًا أوتوماتيك
+  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
+  if (!room) { showMultiScreen(); return; }
   showToast('🔄 جولة جديدة بأسئلة جديدة...');
 
   const newQs = _rebuildMultiQuestions(room);
@@ -9441,6 +9366,7 @@ function multiPlayAgain() {
       currentQ: 0,
       questions: multiState.questions.map(compressQ),
       totalQ: multiState.totalQ,
+      finalScores: null, // ★ مسح نتائج الجولة السابقة
     }).catch(() => {});
     Object.keys(room.players || {}).forEach(pk => {
       window.fbMulti.updatePlayer(multiState.roomCode, pk, { score: 0, answered: false, done: false, finalScore: 0, finalName: null }).catch(() => {});
@@ -9542,7 +9468,12 @@ function _startPolling() {
       }
       // ★ لو المضيف خرج مؤقتاً (واتساب مثلاً) — انتظر ولا تقفل
       if (room.hostOffline && !multiState.isHost) {
-        // المضيف خرج مؤقتاً — استمر في المراقبة بدون رسائل
+        // المضيف خرج مؤقتاً — أظهر رسالة انتظار بس ما تمسحش الغرفة
+        const _offlineFor = Date.now() - (room.hostOfflineAt || Date.now());
+        if (_offlineFor > 60000) { // لو زاد عن دقيقة
+          showToast('⏳ المضيف غاب أكتر من دقيقة...');
+        }
+        // استمر في المراقبة
       }
       window._multiRoomCache = room;
       // Keep alive — كل ٣٠ ثانية بس عشان ما نسبّبش rate limiting
@@ -9562,7 +9493,7 @@ function _startPolling() {
           multiState._peakScore = 0;
           multiState.qIndex = 0;
           multiState._scoreSavedThisRound = false;
-          multiState._startedAt = room.startedAt || Date.now();
+          multiState._startedAt = room.startedAt || Date.now(); // ★ احفظ وقت البداية
           window._lockedScores = {};
           window._prevMultiScores = {};
           const _expFn = window._expandMultiQ || (q => q);
@@ -9570,38 +9501,13 @@ function _startPolling() {
           multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
           multiState.qTime = room.qTime || 15;
           document.getElementById('multiMyScore').textContent = toArabicNum(0);
-          // ★ إخفاء النتايج القديمة وتصفير النقاط اللحظية
-          document.getElementById('multiResults').style.display  = 'none';
-          document.getElementById('multiLiveScores').innerHTML   = '';
-          document.getElementById('multiWaiting').style.display  = 'none';
+          document.getElementById('multiWaiting').style.display = 'none';
           document.getElementById('multiGameArea').style.display = 'block';
           document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
           _renderMultiQuestion();
         } else {
           _updateWaitingUI();
         }
-      } else if (multiState.phase === 'results' && room.phase === 'playing') {
-        // ★ المضيف بدأ جولة جديدة والباقيين في النتايج — ابدأ الجولة الجديدة
-        multiState.myScore = 0;
-        multiState._peakScore = 0;
-        multiState.qIndex = 0;
-        multiState._scoreSavedThisRound = false;
-        multiState._startedAt = room.startedAt || Date.now();
-        window._lockedScores = {};
-        window._prevMultiScores = {};
-        multiState._roundId = Date.now(); // ★ يبطل timeouts الجولة السابقة
-        const _expFn2 = window._expandMultiQ || (q => q);
-        multiState.questions = (room.questions || []).map(_expFn2);
-        multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
-        multiState.qTime = room.qTime || 15;
-        document.getElementById('multiMyScore').textContent = toArabicNum(0);
-        document.getElementById('multiResults').style.display  = 'none';
-        document.getElementById('multiLiveScores').innerHTML   = '';
-        document.getElementById('multiWaiting').style.display  = 'none';
-        document.getElementById('multiGameArea').style.display = 'block';
-        document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
-        multiState.phase = 'playing';
-        _renderMultiQuestion();
       } else if (multiState.phase === 'playing') {
         _updateMultiLiveScores();
         // ★ لو الغرفة انتهت (finished) → اعرض النتائج فوراً
