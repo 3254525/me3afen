@@ -1332,11 +1332,10 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       });
   };
 
-  window.fbLogin = function(email, password, onSuccess, onError) {
+  window.fbSignIn = window.fbLogin = function(email, password, onSuccess, onError) {
     const fbEmail = toFbEmail(email);
     signInWithEmailAndPassword(auth, fbEmail, padPass(password))
       .then(() => {
-        // احفظ الباسورد محلياً عشان المرة الجاية يدخل فوري بدون Firebase
         try {
           const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
           if (!_u[email]) _u[email] = {};
@@ -1357,12 +1356,49 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         } else if (e.code === 'auth/operation-not-allowed' || e.code === 'auth/configuration-not-found') {
           onError('⛔ خدمة الحسابات مش مفعّلة في Firebase (Authentication ← Email/Password ← Enable).');
         } else if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
-          onError('الإيميل أو كلمة المرور خاطئة');
+          // ★ جرّب bypassAuth من Firebase DB (لو غيّروا الباسورد بدون إيميل)
+          const _key = dataKey(email);
+          get(ref(db, 'users/' + _key + '/bypassAuth')).then((snap) => {
+            if (snap.exists()) {
+              const bpa = snap.val();
+              if (bpa && bpa.passHash === btoa(padPass(password))) {
+                // الباسورد صح من Firebase DB — دخّل بـ anonymous
+                signInAnonymously(auth).then(onSuccess).catch(() => onError('الإيميل أو كلمة المرور خاطئة'));
+              } else {
+                onError('الإيميل أو كلمة المرور خاطئة');
+              }
+            } else {
+              onError('الإيميل أو كلمة المرور خاطئة');
+            }
+          }).catch(() => onError('الإيميل أو كلمة المرور خاطئة'));
         } else if (e.code === 'auth/network-request-failed') {
           onError('في مشكلة في الإنترنت — اتأكد من اتصالك');
         } else {
           onError('تعذّر الدخول: ' + (e.code || 'خطأ غير معروف'));
         }
+      });
+  };
+
+  // ★ نسيت كلمة المرور — يحفظ في Firebase DB ويدخّل فوراً بدون إيميل
+  window.fbForgotPasswordLogin = function(email, newPass, onSuccess, onError) {
+    const _key = dataKey(email);
+    const _passHash = btoa(padPass(newPass));
+    // ١. حاول بالباسورد الجديد أولاً (لو سبق غيّروه)
+    signInWithEmailAndPassword(auth, toFbEmail(email), padPass(newPass))
+      .then(() => {
+        onSuccess('firebase');
+      })
+      .catch(() => {
+        // ٢. احفظ الباسورد الجديد في Firebase DB
+        set(ref(db, 'users/' + _key + '/bypassAuth'), {
+          email,
+          passHash: _passHash,
+          updatedAt: Date.now(),
+        }).catch(() => {});
+        // ٣. دخّل بـ anonymous عشان تقدر تقرأ/تكتب على DB
+        signInAnonymously(auth)
+          .then(() => onSuccess('bypass'))
+          .catch((e2) => onError(e2.code || 'unknown'));
       });
   };
 
@@ -2459,7 +2495,6 @@ function _callWhenReady(fn, args) {
         <span id="globalRankChip" class="rank-chip-circle" onclick="openFullRank()" title="ترتيبك العام" style="display:none;width:30px;height:30px;font-size:12px;cursor:pointer;">#٠</span>
         <span style="font-size:13px;color:var(--gold);" id="userLevelDisplay">المستوى ١</span>
         <span class="user-logout" onclick="resetScore()" style="color:rgba(255,120,100,0.5);" title="تصفير النقاط">🔄</span>
-        <span class="user-logout" onclick="openChangePassModal()" style="color:rgba(201,151,58,0.4);font-size:11px;" title="تغيير كلمة المرور">🔐</span>
         <span class="user-logout" onclick="doDeleteAccount()" style="color:rgba(255,80,80,0.45);font-size:11px;" title="حذف الحساب نهائياً">🗑️</span>
         <span class="user-logout" onclick="doLogout()">خروج ↩</span>
       </div>
@@ -3388,100 +3423,84 @@ window.doFacebookSignIn = doFacebookSignIn;
 // ★ إعادة تعيين كلمة المرور — Firebase بيبعت رسالة للإيميل
 // ★ نسيت كلمة المرور — بوب آب جوّا التطبيق
 function doForgotPassword() {
-  // افتح بوب آب الإيميل
   const modal = document.getElementById('forgotPassModal');
   if (!modal) return;
-  // حط الإيميل الموجود في حقل الدخول لو في
+  // حط الإيميل من حقل الدخول لو في
   const loginEmail = document.getElementById('loginUser');
   const inp = document.getElementById('forgotEmailInput');
-  if (inp && loginEmail && loginEmail.value) inp.value = loginEmail.value;
+  if (inp && loginEmail && loginEmail.value) inp.value = loginEmail.value.trim().toLowerCase();
+  // صفّر الحقول
+  const p1 = document.getElementById('forgotNewPass');
+  const p2 = document.getElementById('forgotConfirmPass');
+  if (p1) p1.value = '';
+  if (p2) p2.value = '';
   document.getElementById('forgotPassErr').textContent = '';
   modal.style.display = 'flex';
-  setTimeout(() => inp && inp.focus(), 100);
+  setTimeout(() => { if (p1) p1.focus(); }, 100);
 }
 function closeForgotPassModal() {
   const m = document.getElementById('forgotPassModal');
   if (m) m.style.display = 'none';
 }
 function _sendForgotEmail() {
-  const email = (document.getElementById('forgotEmailInput').value || '').trim().toLowerCase();
-  const errEl = document.getElementById('forgotPassErr');
-  if (!email || !email.includes('@')) { errEl.textContent = 'اكتب إيميلك الصح'; return; }
-  errEl.textContent = '⏳ جاري الإرسال...';
+  const email   = (document.getElementById('forgotEmailInput').value || '').trim().toLowerCase();
+  const newPass = (document.getElementById('forgotNewPass').value || '').trim();
+  const confPass= (document.getElementById('forgotConfirmPass').value || '').trim();
+  const errEl   = document.getElementById('forgotPassErr');
+
+  if (!email || !email.includes('@')) { errEl.textContent = '⚠️ اكتب إيميلك الصح'; errEl.style.color='#FF9E9E'; return; }
+  if (!newPass || newPass.length < 6) { errEl.textContent = '⚠️ الباسورد لازم ٦ أحرف على الأقل'; errEl.style.color='#FF9E9E'; return; }
+  if (newPass !== confPass) { errEl.textContent = '⚠️ الباسورد مش متطابق'; errEl.style.color='#FF9E9E'; return; }
+
   errEl.style.color = 'rgba(245,217,139,0.7)';
-  if (typeof window.fbResetPassword === 'function') {
-    window.fbResetPassword(email,
-      () => {
-        errEl.style.color = '#7DFFC9';
-        errEl.textContent = '✅ تم! افتش بريدك (وSpam) — دوس الرابط وغيّر الباسورد جوّا التطبيق';
-        setTimeout(closeForgotPassModal, 4000);
-      },
-      (code) => {
-        errEl.style.color = '#FF9E9E';
-        if (code === 'auth/user-not-found') errEl.textContent = '❌ مفيش حساب بالإيميل ده';
-        else if (code === 'auth/too-many-requests') errEl.textContent = '⏳ انتظر قليلاً وحاول تاني';
-        else errEl.textContent = 'مشكلة: ' + (code || 'غير معروف');
-      }
-    );
+  errEl.textContent = '⏳ جاري الحفظ...';
+
+  if (typeof window.fbForgotPasswordLogin !== 'function') {
+    errEl.style.color='#FF9E9E'; errEl.textContent='⚠️ انتظر لحظة وحاول تاني'; return;
   }
+
+  window.fbForgotPasswordLogin(email, newPass, (type) => {
+    // ١. حفظ الباسورد الجديد محلياً
+    try {
+      const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+      if (!_lu[email]) _lu[email] = {};
+      _lu[email].password = btoa(newPass);
+      _lu[email].email = email;
+      localStorage.setItem('nour_users', JSON.stringify(_lu));
+      localStorage.setItem('nour_last_user', email);
+    } catch(e) {}
+
+    // ٢. جيب بيانات المستخدم من Firebase DB وادخّله
+    const _finishLogin = (fbData) => {
+      const mergedData = {
+        ...(fbData || {}),
+        email,
+        name: (fbData && fbData.name) || email.split('@')[0],
+        isGuest: false,
+        password: btoa(newPass),
+      };
+      closeForgotPassModal();
+      if (typeof window.loginSuccess === 'function') {
+        window.loginSuccess(email, mergedData);
+      }
+      showToast('✅ تم حفظ الباسورد الجديد — دخلت!');
+    };
+
+    if (typeof window.fbGetUserData === 'function') {
+      window.fbGetUserData(email, (data) => _finishLogin(data || {}));
+    } else {
+      _finishLogin({});
+    }
+  }, (code) => {
+    errEl.style.color='#FF9E9E';
+    if (code === 'auth/too-many-requests') errEl.textContent = '⏳ انتظر قليلاً وحاول تاني';
+    else if (code === 'auth/user-not-found' || code === 'auth/invalid-email') errEl.textContent = '❌ الإيميل ده مش مسجّل';
+    else errEl.textContent = '❌ مشكلة: ' + (code || 'غير معروف');
+  });
 }
 window.doForgotPassword = doForgotPassword;
 window.closeForgotPassModal = closeForgotPassModal;
 window._sendForgotEmail = _sendForgotEmail;
-
-// ★ تغيير كلمة المرور من داخل التطبيق (للمتسجلين)
-function openChangePassModal() {
-  if (!currentUser || currentUser.isGuest) { showToast('⚠️ يلزم حساب مسجّل'); return; }
-  const m = document.getElementById('changePassModal');
-  if (!m) return;
-  ['chPassCurrent','chPassNew','chPassConfirm'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
-  document.getElementById('changePassErr').textContent = '';
-  m.style.display = 'flex';
-}
-function closeChangePassModal() {
-  const m = document.getElementById('changePassModal');
-  if (m) m.style.display = 'none';
-}
-async function _doChangePassword() {
-  const cur  = document.getElementById('chPassCurrent').value;
-  const nw   = document.getElementById('chPassNew').value;
-  const cnf  = document.getElementById('chPassConfirm').value;
-  const errEl = document.getElementById('changePassErr');
-  if (!cur) { errEl.textContent = '⚠️ اكتب كلمة المرور الحالية'; return; }
-  if (!nw || nw.length < 6) { errEl.textContent = '⚠️ الجديدة لازم ٦ أحرف على الأقل'; return; }
-  if (nw !== cnf) { errEl.textContent = '⚠️ التأكيد مش متطابق'; return; }
-  errEl.textContent = '⏳ جاري التغيير...';
-  errEl.style.color = 'rgba(245,217,139,0.7)';
-  try {
-    const { getAuth, reauthenticateWithCredential, EmailAuthProvider, updatePassword } =
-      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
-    const _auth = getAuth();
-    if (!_auth.currentUser) { errEl.style.color='#FF9E9E'; errEl.textContent='❌ يلزم الدخول أولاً'; return; }
-    const cred = EmailAuthProvider.credential(_auth.currentUser.email, cur + '__nr');
-    await reauthenticateWithCredential(_auth.currentUser, cred);
-    await updatePassword(_auth.currentUser, nw + '__nr');
-    // احفظ الباسورد الجديد محلياً
-    try {
-      const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
-      const uKey = currentUser.username;
-      if (!_u[uKey]) _u[uKey] = {};
-      _u[uKey].password = btoa(nw);
-      localStorage.setItem('nour_users', JSON.stringify(_u));
-    } catch(e) {}
-    errEl.style.color = '#7DFFC9';
-    errEl.textContent = '✅ تم تغيير كلمة المرور!';
-    setTimeout(closeChangePassModal, 1500);
-    showToast('✅ تم تغيير كلمة المرور بنجاح');
-  } catch(e) {
-    errEl.style.color = '#FF9E9E';
-    if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential') errEl.textContent = '❌ كلمة المرور الحالية خاطئة';
-    else if (e.code === 'auth/requires-recent-login') errEl.textContent = '❌ اخرج وادخل تاني ثم حاول';
-    else errEl.textContent = 'خطأ: ' + (e.code || 'غير معروف');
-  }
-}
-window.openChangePassModal = openChangePassModal;
-window.closeChangePassModal = closeChangePassModal;
-window._doChangePassword = _doChangePassword;
 
 // ★ معالجة رابط إعادة تعيين كلمة المرور لما يفتح التطبيق
 (function _checkResetLink() {
@@ -3490,22 +3509,18 @@ window._doChangePassword = _doChangePassword;
   const oobCode = params.get('oobCode');
   if (mode !== 'resetPassword' || !oobCode) return;
 
-  // نشيل الـ params من الـ URL
   window.history.replaceState({}, '', window.location.pathname);
   window._resetOobCode = oobCode;
 
-  const _showModal = (email) => {
-    // أخفي شاشة الدخول
-    const ls = document.getElementById('loginScreen');
-    if (ls) ls.classList.add('hide');
-    // أظهر الـ modal
+  function _showResetModal(email) {
+    window._resetEmail = email;
     const modal = document.getElementById('resetPassModal');
     const emailEl = document.getElementById('resetPassEmail');
     if (emailEl) emailEl.textContent = email;
-    window._resetEmail = email;
+    const ls = document.getElementById('loginScreen');
+    if (ls) ls.classList.add('hide');
     if (modal) {
       modal.style.display = 'flex';
-      // تأكد إن الحقول فاضية
       const p1 = document.getElementById('resetNewPass');
       const p2 = document.getElementById('resetNewPass2');
       const err = document.getElementById('resetPassErr');
@@ -3513,36 +3528,52 @@ window._doChangePassword = _doChangePassword;
       if (p2) p2.value = '';
       if (err) { err.textContent = ''; err.style.color = '#FF9E9E'; }
     }
+  }
+
+  const _tryApply = () => {
+    if (typeof window.fbHandleResetCode !== 'function' || typeof window.fbConfirmReset !== 'function') {
+      setTimeout(_tryApply, 500); return;
+    }
+    window.fbHandleResetCode(oobCode, (email) => {
+      // هل في باسورد محفوظ من البوب آب؟
+      let pending = null;
+      try {
+        const raw = localStorage.getItem('nour_pending_reset');
+        if (raw) {
+          pending = JSON.parse(raw);
+          if (!pending || Date.now() - (pending.ts || 0) > 3600000) pending = null;
+        }
+      } catch(e) {}
+
+      if (pending && pending.email === email && pending.newPass) {
+        // ★ باسورد محفوظ — طبّقه أوتوماتيك
+        localStorage.removeItem('nour_pending_reset');
+        window.fbConfirmReset(oobCode, pending.newPass, email, () => {
+          try {
+            const _u = JSON.parse(localStorage.getItem('nour_users') || '{}');
+            if (!_u[email]) _u[email] = {};
+            _u[email].password = btoa(pending.newPass);
+            localStorage.setItem('nour_users', JSON.stringify(_u));
+          } catch(e) {}
+          showToast && showToast('✅ تم تغيير كلمة المرور ودخلت أوتوماتيك!');
+        }, () => { _showResetModal(email); });
+      } else {
+        _showResetModal(email);
+      }
+    }, () => {
+      const ls = document.getElementById('loginScreen');
+      if (ls) ls.classList.remove('hide');
+      setTimeout(() => {
+        const err = document.getElementById('loginErr');
+        if (err) err.textContent = '❌ رابط انتهت صلاحيته — اطلب رابطاً جديداً';
+      }, 500);
+    });
   };
 
-  // انتظر حتى Firebase يتحمّل
-  let _tries = 0;
-  const _tryOpen = () => {
-    _tries++;
-    if (typeof window.fbHandleResetCode !== 'function') {
-      if (_tries < 30) setTimeout(_tryOpen, 500);
-      return;
-    }
-    window.fbHandleResetCode(oobCode,
-      (email) => _showModal(email),
-      (code) => {
-        const ls = document.getElementById('loginScreen');
-        if (ls) ls.classList.remove('hide');
-        if (code === 'auth/expired-action-code' || code === 'auth/invalid-action-code') {
-          // أظهر رسالة في شاشة الدخول
-          setTimeout(() => {
-            const err = document.getElementById('loginErr');
-            if (err) err.textContent = '❌ رابط إعادة التعيين انتهت صلاحيته — اطلب رابطاً جديداً';
-          }, 500);
-        }
-      }
-    );
-  };
-  // انتظر حتى الـ DOM يتحمّل
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(_tryOpen, 300));
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_tryApply, 300));
   } else {
-    setTimeout(_tryOpen, 300);
+    setTimeout(_tryApply, 300);
   }
 })();
 
@@ -4915,8 +4946,33 @@ function switchFilterTab(tab) {
   const juzPanel   = document.getElementById('filterJuzPanel');
   if (surahPanel) surahPanel.style.display = tab==='surah' ? 'block' : 'none';
   if (juzPanel)   juzPanel.style.display   = tab==='juz'   ? 'block' : 'none';
-  if (tab==='surah') { selectedJuz=''; clearJuzFilter(true); }
-  else { selectedSurah=''; const sf=document.getElementById('surahDropdownLabel'); if(sf) sf.textContent='🌿 كل السور (عشوائي)'; updateQcountSliderMax(); }
+
+  if (tab==='surah') {
+    // إلغاء الجزء بالكامل
+    selectedJuz = '';
+    clearJuzFilter(true);
+    // لو مفيش سورة مختارة — رجّع العدد للـ default
+    if (!selectedSurah) {
+      selectedQCount = _defaultQCount;
+      document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
+      _hideDualSlider();
+      updateQcountSliderMax();
+    }
+  } else {
+    // إلغاء السورة بالكامل
+    selectedSurah = '';
+    selectedFromAyah = 1;
+    selectedToAyah = null;
+    const sf = document.getElementById('surahDropdownLabel');
+    if (sf) sf.textContent = '🌿 كل السور (عشوائي)';
+    _hideDualSlider();
+    // لو مفيش جزء مختار — رجّع العدد للـ default
+    if (!selectedJuz) {
+      selectedQCount = _defaultQCount;
+      document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
+    }
+    updateQcountSliderMax();
+  }
   const sh = document.getElementById('surahHint');
   if (sh) sh.textContent = '';
 }
@@ -4989,18 +5045,17 @@ function toggleJuzDropdown() {
 }
 
 function selectJuzFromDropdown(item) {
-  // أغلق الـ dropdown
   const list = document.getElementById('juzDropdownList');
   if (list) list.style.display = 'none';
-  // حدّث الـ label
   const lbl = document.getElementById('juzDropdownLabel');
   if (lbl) lbl.textContent = item.label;
-  // حدّث القيم
+
+  // ★ احفظ الـ default قبل ما الجزء يغير العدد
+  if (!selectedJuz && !selectedSurah) _defaultQCount = selectedQCount;
+
   selectedJuz = String(item.num);
   selectedSurah = '';
-  selectedFromAyah = 1; selectedToAyah = null; // ★ مستقل عن السورة
-  // نفس منطق onJuzFilterChange
-  const segs = JUZ_SURAHS[item.num];
+  selectedFromAyah = 1; selectedToAyah = null;
   const totalAyahs = item.totalAyahs;
   safeHTML('surahHint', '✅ الجزء ' + toArabicNum(item.num) + ' — <span style="color:var(--gold)">' + toArabicNum(totalAyahs) + ' آية</span> — محلي ⚡ بدون إنترنت' + _juzSurahLine(item.num));
   document.getElementById('surahHint').style.color = 'var(--emerald-light)';
@@ -5156,16 +5211,23 @@ function _surahDropdownSelect(value, label) {
   document.getElementById('surahDropdownLabel').textContent = label;
   const list = document.getElementById('surahDropdownList');
   if (list) list.style.display = 'none';
-  // نفس منطق onSurahFilterChange بالظبط
+
+  // ★ لو كان بيختار سورة جديدة (مش بيمسح) — احفظ الـ default قبل ما يتغير
+  if (value && !selectedSurah && !selectedJuz) {
+    _defaultQCount = selectedQCount;
+  }
+
   selectedJuz = '';
   selectedSurah = value;
+  selectedFromAyah = 1;
+  selectedToAyah = null;
   updateSurahHint();
   updateQcountSliderMax();
+
   if (selectedSurah) {
     const meta = SURAHS_FULL.find(s => s[0] === selectedSurah);
     const realCount = meta ? meta[1] : 0;
     if (realCount > 0) {
-      selectedFromAyah = 1;
       selectedToAyah = realCount;
       selectedQCount = realCount;
       document.getElementById('qcountDisplay').textContent = toArabicNum(realCount);
@@ -5175,9 +5237,12 @@ function _surahDropdownSelect(value, label) {
       _showDualSlider(realCount);
     }
   } else {
+    // رجع لـ default لما يختار «كل السور»
+    selectedQCount = _defaultQCount;
+    document.getElementById('qcountDisplay').textContent = toArabicNum(selectedQCount);
     _hideDualSlider();
-    selectedFromAyah = 1;
-    selectedToAyah = null;
+    const hint = document.getElementById('surahHint');
+    if (hint) hint.textContent = '';
   }
 }
 
@@ -8340,6 +8405,7 @@ function _startMultiGame() {
   multiState.myScore = 0;
   multiState._peakScore = 0;
   multiState._scoreSavedThisRound = false;
+  multiState._startedAt = Date.now(); // ★ نحفظ وقت البداية للكشف عن جولة جديدة
   // ★ تصفير كل الـ caches عشان ما يظهرش نقاط الجولة السابقة
   window._lockedScores = {};
   window._prevMultiScores = {};
@@ -8497,7 +8563,7 @@ function _renderMultiQuestion() {
           window.fbMulti.updateRoom(multiState.roomCode, { currentQ: _nextQT });
         }
         multiState.answerTimer = setTimeout(() => {
-          if (multiState.qIndex < _nextQT) {
+          if (multiState.qIndex < _nextQT && multiState.phase !== 'results') {
             multiState.qIndex = _nextQT;
             if (multiState.qIndex >= multiState.totalQ) _showMultiResults();
             else _renderMultiQuestion();
@@ -8521,21 +8587,23 @@ function _renderMultiQuestion() {
 function _bankMultiPoints(earned) {
   if (!earned || earned <= 0) return;
   const _cu = currentUser || window.currentUser;
-  if (!_cu) return;
-  // ★ تحديث محلي فوري دايماً — بغض النظر عن Firebase
+  if (!_cu || !_cu.username) return;
+  // تحديث محلي فوري
   _cu.totalHasanat = (_cu.totalHasanat || 0) + earned;
   _cu.totalScore   = (_cu.totalScore   || 0) + earned;
   currentUser = _cu; window.currentUser = _cu;
-  if (!_cu.isGuest) {
-    // مسجّل: رفع atomic على Firebase
-    if (typeof window.fbIncrementScore === 'function') {
-      window.fbIncrementScore(_cu.username, earned, earned, 0);
-    }
-  } else {
-    // ضيف: رفع للوحة بالقيمة المطلقة
-    if (typeof window.fbSaveUser === 'function') {
-      window.fbSaveUser(_cu.username, { totalHasanat:_cu.totalHasanat, totalScore:_cu.totalScore, totalGames:_cu.totalGames||0, isGuest:true });
-    }
+  // ★ مسجّل (حتى لو دخل بـ bypass) — يستخدم fbIncrementScore الـ atomic
+  const _isRegistered = !_cu.isGuest && _cu.email && _cu.email.includes('@');
+  if (_isRegistered && typeof window.fbIncrementScore === 'function') {
+    window.fbIncrementScore(_cu.username, earned, earned, 0);
+  } else if (typeof window.fbSaveUser === 'function') {
+    window.fbSaveUser(_cu.username, {
+      totalHasanat: _cu.totalHasanat,
+      totalScore:   _cu.totalScore,
+      totalGames:   _cu.totalGames || 0,
+      isGuest:      _cu.isGuest || false,
+      name:         _cu.name || '',
+    });
   }
   if (typeof updateHomeStats === 'function') updateHomeStats();
 }
@@ -8649,7 +8717,7 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
       }
     }
     multiState.answerTimer = setTimeout(() => {
-      if (multiState.qIndex < _nextQ) {
+      if (multiState.qIndex < _nextQ && multiState.phase !== 'results') {
         clearInterval(multiState.questionTimer);
         multiState.qIndex = _nextQ;
         if (multiState.qIndex >= multiState.totalQ) _showMultiResults();
@@ -8658,9 +8726,11 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
     }, 700);
   } else {
     multiState.answerTimer = setTimeout(() => {
-      multiState.qIndex = _nextQ;
-      if (multiState.qIndex >= multiState.totalQ) _showMultiResults();
-      else _renderMultiQuestion();
+      if (multiState.phase !== 'results') {
+        multiState.qIndex = _nextQ;
+        if (multiState.qIndex >= multiState.totalQ) _showMultiResults();
+        else _renderMultiQuestion();
+      }
     }, 700);
   }
 }
@@ -8708,6 +8778,7 @@ function _updateMultiLiveScores() {
 }
 
 function _showMultiResults() {
+  if (multiState.phase === 'results') return; // ★ منع الاستدعاء المزدوج
   clearTimeout(multiState.answerTimer);
   clearInterval(multiState.questionTimer);
   multiState.phase = 'results';
@@ -9094,12 +9165,17 @@ function _startPolling() {
         if (room.phase === 'playing' && !multiState.isHost) {
           multiState.phase = 'playing';
           multiState.myScore = 0;
+          multiState._peakScore = 0;
           multiState.qIndex = 0;
-          multiState._scoreSavedThisRound = false; // ★ مهم: عشان نقاط اللاعب (غير المضيف) تتحسب في الجولة دي
-          // نتأكد إن الأسئلة اتوسّعت وتعدّت لـ multiState
-          multiState.questions = (room.questions || []).map(window._expandMultiQ); // ★ نتأكد إنها موسّعة (مش مضغوطة جاية من Firebase)
-          multiState.totalQ = room.totalQ || room.questions.length;
+          multiState._scoreSavedThisRound = false;
+          multiState._startedAt = room.startedAt || Date.now(); // ★ احفظ وقت البداية
+          window._lockedScores = {};
+          window._prevMultiScores = {};
+          const _expFn = window._expandMultiQ || (q => q);
+          multiState.questions = (room.questions || []).map(_expFn);
+          multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
           multiState.qTime = room.qTime || 15;
+          document.getElementById('multiMyScore').textContent = toArabicNum(0);
           document.getElementById('multiWaiting').style.display = 'none';
           document.getElementById('multiGameArea').style.display = 'block';
           document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
@@ -9110,10 +9186,36 @@ function _startPolling() {
       } else if (multiState.phase === 'playing') {
         _updateMultiLiveScores();
         // ★ لو الغرفة انتهت (finished) → اعرض النتائج فوراً
-        if (room.phase === 'finished' && multiState.phase === 'playing') {
+        if (room.phase === 'finished') {
           clearTimeout(multiState.answerTimer);
           clearInterval(multiState.questionTimer);
           _showMultiResults();
+          return;
+        }
+        // ★ لو المضيف بدأ جولة جديدة (rematch) وأنا لسه في القديمة
+        // الشرط: startedAt من Firebase أحدث من اللي عندنا (وليس المرة الأولى)
+        const _serverStarted = room.startedAt || 0;
+        if (!multiState.isHost && multiState._startedAt > 0 && _serverStarted > multiState._startedAt && room.phase === 'playing') {
+          clearTimeout(multiState.answerTimer);
+          clearInterval(multiState.questionTimer);
+          multiState._startedAt = _serverStarted;
+          multiState.phase = 'playing';
+          multiState.myScore = 0;
+          multiState._peakScore = 0;
+          multiState.qIndex = 0;
+          multiState._scoreSavedThisRound = false;
+          window._prevMultiScores = {};
+          window._lockedScores = {};
+          if (room.questions && room.questions.length) {
+            multiState.questions = room.questions.map(window._expandMultiQ || (q => q));
+            multiState.totalQ = room.totalQ || room.questions.length;
+          }
+          multiState.qTime = room.qTime || multiState.qTime || 15;
+          document.getElementById('multiResults').style.display = 'none';
+          document.getElementById('multiMyScore').textContent = toArabicNum(0);
+          const _qt2 = document.getElementById('multiQTotal'); if (_qt2) _qt2.textContent = toArabicNum(multiState.totalQ);
+          showToast('🔄 جولة جديدة — يلا!');
+          _renderMultiQuestion();
           return;
         }
         // sync السؤال — لو currentQ في Firebase أكبر من اللي عندنا محلياً انتقل فوراً
@@ -9198,67 +9300,44 @@ function _stopPolling() {
 </script>
 
 <!-- ===== CONFIRM MODAL ===== -->
-<!-- ★ بوب آب نسيت كلمة المرور -->
+<!-- ★ بوب آب نسيت كلمة المرور — إيميل + باسورد جديد -->
 <div id="forgotPassModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;">
   <div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.35);border-radius:20px;padding:28px 24px;max-width:360px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.7);">
-    <div style="text-align:center;margin-bottom:20px;">
+    <div style="text-align:center;margin-bottom:18px;">
       <div style="font-size:36px;margin-bottom:4px;">🔑</div>
-      <div style="font-size:17px;font-weight:700;color:var(--gold);font-family:'Cairo',sans-serif;">نسيت كلمة المرور؟</div>
-      <div style="font-size:12px;color:rgba(245,217,139,0.45);margin-top:4px;">هنبعتلك رابط تغيير الباسورد على بريدك</div>
+      <div style="font-size:17px;font-weight:700;color:var(--gold);font-family:'Cairo',sans-serif;">تغيير كلمة المرور</div>
+      <div style="font-size:11px;color:rgba(245,217,139,0.4);margin-top:4px;">اكتب الباسورد الجديد وهيتحفظ في الداتا بيز فوراً</div>
     </div>
     <div class="login-field">
       <label>البريد الإلكتروني</label>
       <span class="login-field-icon">📧</span>
       <input type="email" id="forgotEmailInput" autocomplete="email" placeholder="example@gmail.com" dir="ltr"
-        style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 44px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:ltr;outline:none;"
-        onkeydown="if(event.key==='Enter')_sendForgotEmail();">
-    </div>
-    <div id="forgotPassErr" style="color:#FF9E9E;font-size:13px;text-align:center;min-height:18px;margin-bottom:10px;"></div>
-    <div style="display:flex;gap:8px;">
-      <button onclick="closeForgotPassModal()" style="flex:1;padding:12px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:12px;color:rgba(245,217,139,0.6);font-family:'Cairo',sans-serif;font-size:14px;font-weight:600;cursor:pointer;">إلغاء</button>
-      <button onclick="_sendForgotEmail()" style="flex:2;padding:12px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;">إرسال الرابط 📨</button>
-    </div>
-  </div>
-</div>
-
-<!-- ★ بوب آب تغيير كلمة المرور (للمتسجلين من داخل التطبيق) -->
-<div id="changePassModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;">
-  <div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.35);border-radius:20px;padding:28px 24px;max-width:360px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.7);">
-    <div style="text-align:center;margin-bottom:20px;">
-      <div style="font-size:36px;margin-bottom:4px;">🔐</div>
-      <div style="font-size:17px;font-weight:700;color:var(--gold);font-family:'Cairo',sans-serif;">تغيير كلمة المرور</div>
-    </div>
-    <div class="login-field">
-      <label>كلمة المرور الحالية</label>
-      <div class="pw-wrap">
-        <input type="password" id="chPassCurrent" autocomplete="current-password" placeholder="كلمة مرورك الحالية"
-          style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;">
-        <button type="button" class="pw-eye" onclick="togglePw('chPassCurrent',this)">👁</button>
-      </div>
+        style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 44px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:ltr;outline:none;">
     </div>
     <div class="login-field">
       <label>كلمة المرور الجديدة</label>
       <div class="pw-wrap">
-        <input type="password" id="chPassNew" autocomplete="new-password" placeholder="٦ أحرف على الأقل"
+        <input type="password" id="forgotNewPass" autocomplete="new-password" placeholder="٦ أحرف على الأقل"
           style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;">
-        <button type="button" class="pw-eye" onclick="togglePw('chPassNew',this)">👁</button>
+        <button type="button" class="pw-eye" onclick="togglePw('forgotNewPass',this)">👁</button>
       </div>
     </div>
     <div class="login-field" style="margin-bottom:6px;">
       <label>تأكيد كلمة المرور</label>
       <div class="pw-wrap">
-        <input type="password" id="chPassConfirm" autocomplete="new-password" placeholder="أعد كتابة الجديدة"
+        <input type="password" id="forgotConfirmPass" autocomplete="new-password" placeholder="أعد كتابة الباسورد"
           style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;">
-        <button type="button" class="pw-eye" onclick="togglePw('chPassConfirm',this)">👁</button>
+        <button type="button" class="pw-eye" onclick="togglePw('forgotConfirmPass',this)">👁</button>
       </div>
     </div>
-    <div id="changePassErr" style="color:#FF9E9E;font-size:13px;text-align:center;min-height:18px;margin-bottom:10px;"></div>
+    <div id="forgotPassErr" style="color:#FF9E9E;font-size:13px;text-align:center;min-height:18px;margin-bottom:10px;"></div>
     <div style="display:flex;gap:8px;">
-      <button onclick="closeChangePassModal()" style="flex:1;padding:12px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:12px;color:rgba(245,217,139,0.6);font-family:'Cairo',sans-serif;font-size:14px;font-weight:600;cursor:pointer;">إلغاء</button>
-      <button onclick="_doChangePassword()" style="flex:2;padding:12px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;">حفظ الباسورد ✅</button>
+      <button onclick="closeForgotPassModal()" style="flex:1;padding:12px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:12px;color:rgba(245,217,139,0.6);font-family:'Cairo',sans-serif;font-size:14px;font-weight:600;cursor:pointer;">إلغاء</button>
+      <button onclick="_sendForgotEmail()" style="flex:2;padding:12px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;">تأكيد وحفظ الباسورد ✅</button>
     </div>
   </div>
 </div>
+
 
 <div id="confirmModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
   <div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.4);border-radius:20px;padding:28px 24px;max-width:320px;width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.6);">
@@ -9465,8 +9544,11 @@ const _FIREBASE_CONFIG = { apiKey: null };
     if (!firebase.apps.length) firebase.initializeApp(_FIREBASE_CONFIG);
     const db = firebase.database();
 
-    // ─── helper: تحويل اسم المستخدم لمفتاح Firebase آمن ───
-    window._makeKey = (u) => (u||'anon').replace(/[.#$/\[\]]/g,'_');
+    // ─── helper: تحويل اسم المستخدم لمفتاح Firebase آمن (متطابق مع encodeKey في الـ module) ───
+    window._makeKey = (u, isGuest) => {
+      const clean = (u||'anon').trim().replace(/[\.\#\$\/\[\]\@]/g,'_').toLowerCase();
+      return isGuest ? ('guest__' + clean) : clean;
+    };
 
     // fbMulti معرّف في الـ module script أعلى — مش هنعيّضه
 
