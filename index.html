@@ -1891,14 +1891,11 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
     const tryGet = (path) => get(ref(db, path)).then(s => s.exists() ? s.val() : null).catch(() => null);
 
-    const _lbNamePromise = fetch('https://nour-9bd41-default-rtdb.europe-west1.firebasedatabase.app/leaderboard/' + _dbKey + '/name.json')
-      .then(r => r.json()).then(n => n && typeof n === 'string' && !n.includes('@') ? n : null).catch(() => null);
     Promise.all([
       tryGet('users/' + _dbKey + '/data'),
       tryGet('users/' + _dbKey + '/name'),
-      _lbNamePromise,
-    ]).then(([fbData_, fbName, lbName]) => {
-      const lbData = lbName ? { name: lbName } : null;
+      tryGet('leaderboard/' + _dbKey),
+    ]).then(([fbData_, fbName, lbData]) => {
       const fbData = fbData_ || {};
       const _localUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
       const _localData  = _localUsers[realUsername] || {};
@@ -3347,21 +3344,18 @@ function doLogin() {
         };
         // اقرأ البيانات + الاسم المستقل
         const _key = typeof window._dataKey === 'function' ? window._dataKey(user) : user;
-        const _lbKey = typeof window._dataKey === 'function' ? window._dataKey(user) : user;
         const _readName = typeof window.fbGetName === 'function'
           ? new Promise(res => window.fbGetName(user, res))
           : Promise.resolve(null);
-        const _readLb = new Promise(res => {
-          import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js').catch(() => res(null));
-          // نقرأ من leaderboard عبر REST (بدون auth)
-          fetch('https://nour-9bd41-default-rtdb.europe-west1.firebasedatabase.app/leaderboard/' + _lbKey + '/name.json')
-            .then(r => r.json()).then(n => res(n && typeof n === 'string' ? n : null)).catch(() => res(null));
+        const _readLbName = new Promise(res => {
+          const _lk = typeof window._dataKey === 'function' ? window._dataKey(user) : user;
+          get(ref(db, 'leaderboard/' + _lk + '/name')).then(s => res(s.exists() && typeof s.val()==='string' && !s.val().includes('@') ? s.val() : null)).catch(() => res(null));
         });
         if (typeof window.fbGetAccount === 'function') {
           Promise.all([
             new Promise(res => window.fbGetAccount(user, (rn, fd) => res([rn, fd]))),
             _readName,
-            _readLb,
+            _readLbName,
           ]).then(([[realName, fbData], fbName, lbName]) => _finishFresh(realName || user, fbData, fbName || lbName));
         } else if (typeof window.fbGetUserData === 'function') {
           Promise.all([
@@ -6861,6 +6855,8 @@ function goHome() {
   showScreen('homeScreen');
   updateHomeStats();
 }
+
+window.goHome = goHome;
 
 // ============================================================
 // ===== DAILY MISTAKES =====
