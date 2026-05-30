@@ -3534,82 +3534,45 @@ function closeForgotPassModal() {
   if (m) m.style.display = 'none';
 }
 function _sendForgotEmail() {
-  const email   = (document.getElementById('forgotEmailInput').value || '').trim().toLowerCase();
-  const newPass = (document.getElementById('forgotNewPass').value || '').trim();
-  const confPass= (document.getElementById('forgotConfirmPass').value || '').trim();
-  const errEl   = document.getElementById('forgotPassErr');
+  const email    = (document.getElementById('forgotEmailInput').value || '').trim().toLowerCase();
+  const newPass  = (document.getElementById('forgotNewPass').value || '').trim();
+  const confPass = (document.getElementById('forgotConfirmPass').value || '').trim();
+  const errEl    = document.getElementById('forgotPassErr');
 
   if (!email || !email.includes('@')) { errEl.textContent = '⚠️ اكتب إيميلك الصح'; errEl.style.color='#FF9E9E'; return; }
   if (!newPass || newPass.length < 6) { errEl.textContent = '⚠️ الباسورد لازم ٦ أحرف على الأقل'; errEl.style.color='#FF9E9E'; return; }
   if (newPass !== confPass) { errEl.textContent = '⚠️ الباسورد مش متطابق'; errEl.style.color='#FF9E9E'; return; }
 
-  errEl.style.color = 'rgba(245,217,139,0.7)';
-  errEl.textContent = '⏳ جاري الحفظ...';
-
-  if (typeof window.fbForgotPasswordLogin !== 'function') {
-    errEl.style.color='#FF9E9E'; errEl.textContent='⚠️ انتظر لحظة وحاول تاني'; return;
-  }
-
-  // ★ حفظ الباسورد محلياً فوراً — مش بننتظر Firebase
+  // ★ خطوة ١: احفظ محلياً فوراً
   try {
     const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
     if (!_lu[email]) _lu[email] = {};
-    const _existingName = _lu[email].name || localStorage.getItem('nour_name_' + email);
     _lu[email].password = btoa(newPass);
-    _lu[email].email = email;
-    if (_existingName) _lu[email].name = _existingName;
+    _lu[email].email    = email;
+    const _n = localStorage.getItem('nour_name_' + email) || _lu[email].name;
+    if (_n) _lu[email].name = _n;
     localStorage.setItem('nour_users', JSON.stringify(_lu));
     localStorage.setItem('nour_last_user', email);
   } catch(e) {}
 
-  // ★ timeout شامل — لو Firebase علقت، ندخّل محلياً بعد 7 ثواني
-  let _done = false;
-  const _safeFinish = (fbData) => {
-    if (_done) return;
-    _done = true;
-    if (window._loggedOut) return;
+  // ★ خطوة ٢: أغلق الـ modal وادخّل المستخدم فوراً
+  closeForgotPassModal();
+  if (!window._loggedOut) {
     const _lData = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}')[email] || {}; } catch(e) { return {}; } })();
-    const mergedData = {
-      ...(fbData || {}), ..._lData, email,
-      name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null)
-            || (fbData && fbData.name) || _lData.name || '',
-      isGuest: false, password: btoa(newPass),
-      totalScore:   Math.max((fbData && fbData.totalScore)   || 0, _lData.totalScore   || 0),
-      totalGames:   Math.max((fbData && fbData.totalGames)   || 0, _lData.totalGames   || 0),
-      totalHasanat: Math.max((fbData && fbData.totalHasanat) || 0, _lData.totalHasanat || 0),
-    };
-    closeForgotPassModal();
     if (typeof window._markAuthDone === 'function') window._markAuthDone();
-    if (typeof window.loginSuccess === 'function') window.loginSuccess(email, mergedData);
-    showToast('✅ تم حفظ الباسورد — دخلت!');
-  };
-
-  // timeout: لو علقت بعد 7 ثواني — ادخّل محلياً
-  const _timeoutId = setTimeout(() => {
-    if (!_done) { _safeFinish(null); }
-  }, 7000);
-
-  window.fbForgotPasswordLogin(email, newPass, (type) => {
-    // ★ ادخّل فوراً بالبيانات المحلية — مش بننتظر Firebase تاني
-    _safeFinish(null);
-    // ★ حدّث البيانات من Firebase في الخلفية بهدوء
-    if (type !== 'local' && typeof window.fbGetUserData === 'function') {
-      window.fbGetUserData(email, (fbData) => {
-        if (!fbData || !currentUser || currentUser.username !== email) return;
-        if (fbData.totalScore > (currentUser.totalScore || 0)) {
-          currentUser.totalScore   = fbData.totalScore;
-          currentUser.totalHasanat = fbData.totalHasanat;
-          currentUser.totalGames   = fbData.totalGames;
-          window.currentUser = currentUser;
-          if (typeof updateHomeStats === 'function') updateHomeStats();
-        }
+    if (typeof window.loginSuccess === 'function') {
+      window.loginSuccess(email, {
+        ..._lData, email, isGuest: false, password: btoa(newPass),
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || _lData.name || '',
       });
     }
-  }, (code) => {
-    clearTimeout(_timeoutId);
-    // خطأ Firebase — ادخّل محلياً
-    _safeFinish(null);
-  });
+  }
+  showToast('✅ تم حفظ الباسورد!');
+
+  // ★ خطوة ٣: اكتب bypassAuth في Firebase في الخلفية (مش بننتظر)
+  if (typeof window.fbForgotPasswordLogin === 'function') {
+    window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
+  }
 }
 window.doForgotPassword = doForgotPassword;
 window.closeForgotPassModal = closeForgotPassModal;
