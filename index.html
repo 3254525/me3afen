@@ -1420,20 +1420,10 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       new Promise((_, rej) => setTimeout(() => rej('timeout'), 6000)),
     ]);
 
-    // ★ بعد كتابة bypassAuth — نربط/نحدّث Firebase Auth بالباسورد الجديد
-    // عشان لو خرجوا وعملوا تغيير تاني، signInWithEmailAndPassword تشتغل بالقديم
-    const _syncFirebaseAuth = () => {
-      if (!auth.currentUser || auth.currentUser.isAnonymous) return;
-      const cred = EmailAuthProvider.credential(toFbEmail(email), padPass(newPass));
-      // جرّب link أولاً (لو مش مربوط email/password) وإلا update
-      linkWithCredential(auth.currentUser, cred)
-        .catch(() => updatePassword(auth.currentUser, padPass(newPass)).catch(() => {}));
-    };
-
     // ★ خطوة ١: لو في session حالية مش anonymous → اكتب مباشرة
     if (auth.currentUser && !auth.currentUser.isAnonymous) {
       _writeBypass()
-        .then(() => { _syncFirebaseAuth(); onSuccess('bypass'); })
+        .then(() => onSuccess('bypass'))
         .catch(() => onSuccess('local'));
       return;
     }
@@ -1457,7 +1447,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
         _tryOldPass
           .then(() => _writeBypass())
-          .then(() => { _syncFirebaseAuth(); onSuccess('firebase'); })
+          .then(() => onSuccess('firebase'))
           .catch(() => {
             // ★ خطوة ٤: anonymous fallback (لو مفعّل)
             signInAnonymously(auth)
@@ -3563,7 +3553,7 @@ function _sendForgotEmail() {
   if (typeof window.loginSuccess === 'function') {
     window.loginSuccess(email, {
       ..._lData, email, isGuest: false, password: btoa(newPass),
-      name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || _lData.name || '',
+      name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (_lData.name && !_lData.name.includes('@') ? _lData.name : '') || '',
     });
   }
   showToast('✅ تم حفظ الباسورد!');
