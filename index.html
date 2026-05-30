@@ -3678,6 +3678,10 @@ function _sendForgotEmail() {
     localStorage.setItem('nour_last_user', email);
   } catch(e) {}
 
+  // ★ أغلق الـ keyboard من كل inputs الـ modal
+  ['forgotEmailInput','forgotNewPass','forgotConfirmPass'].forEach(function(id){
+    var el = document.getElementById(id); if(el) el.blur();
+  });
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 
   // كتابة الباسورد في Firebase في الخلفية
@@ -3700,6 +3704,13 @@ function _sendForgotEmail() {
   }
   setTimeout(() => {
     closeForgotPassModal();
+    // ★ الموبايل: بعد إقفال الـ modal نعمل scroll للأعلى
+    // عشان الـ viewport يستقر والأزرار تكون في مكانها الصح
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    }, 100);
   }, 1400);
 
   // ★ لو المستخدم داخل بالفعل — خلّيه داخل بدون أي تغيير
@@ -4040,7 +4051,7 @@ function _finishLogin(username, isGuest) {
   const _disp = _displayName(currentUser || { username });
   const _el = document.getElementById('userNameDisplay');
   _el.innerHTML = '👤 ' + _disp + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
-  if (typeof window.fbSignInAnon === 'function') window.fbSignInAnon();
+  if (typeof window.fbSignInAnon === 'function' && !isGuest) window.fbSignInAnon();
   if (typeof window.fbWatchName === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
