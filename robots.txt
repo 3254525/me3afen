@@ -1,7 +1,0 @@
-# نور — الموقع الرسمي لحفظ القرآن الكريم
-# Official site: https://nourquranofficial.github.io/nour/
-
-User-agent: *
-Allow: /
-
-Sitemap: https://nourquranofficial.github.io/nour/sitemap.xml
