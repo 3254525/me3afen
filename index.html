@@ -3206,7 +3206,7 @@ let currentUser = null;
 
     // أخفي شاشة الدخول فوراً وأظهر الرئيسية
     const ls = document.getElementById('loginScreen');
-    if (ls) { ls.classList.add('hide'); ls.style.display = 'none'; ls.style.pointerEvents = 'none'; }
+    if (ls) { ls.classList.add('hide'); ls.style.pointerEvents = 'none'; }
     const hs = document.getElementById('homeScreen');
     if (hs) hs.classList.add('show');
 
@@ -3332,7 +3332,7 @@ function doLogin() {
             localStorage.setItem('nour_last_user', user);
           } catch(e) {}
           const _lsEl = document.getElementById('loginScreen');
-  if (_lsEl) { _lsEl.classList.add('hide'); _lsEl.style.pointerEvents = 'none'; }
+  if (_lsEl) { _lsEl.classList.add('hide'); }
           loginSuccess(realName || user, merged);
           if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
             window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
@@ -3359,7 +3359,7 @@ function doLogin() {
       },
       (errMsg) => {
         currentUser = null; window.currentUser = null;
-        document.getElementById('loginScreen').classList.remove('hide');
+        const _lsR = document.getElementById('loginScreen'); if(_lsR){_lsR.classList.remove('hide');_lsR.style.display='';_lsR.style.pointerEvents='';}
         // ★ Fallback محلي: لو Firebase فشل وفيه باسورد محلي صح
         const _lFresh = getUsers()[user];
         if (!window._loggedOut && _lFresh && _lFresh.password === btoa(pass)) {
@@ -3947,7 +3947,7 @@ function doLogout() {
   const _ov = document.getElementById('_nameEditOverlay');
   if (_ov) _ov.style.display = 'none';
   const _lsOut = document.getElementById('loginScreen');
-  if (_lsOut) { _lsOut.classList.remove('hide'); _lsOut.style.pointerEvents = 'auto'; }
+  if (_lsOut) { _lsOut.classList.remove('hide'); _lsOut.style.display = ''; _lsOut.style.pointerEvents = ''; _lsOut.style.visibility = ''; }
 }
 
 function saveCurrentUser() {
