@@ -2292,6 +2292,26 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   }
   _attachLbListener();
 
+  // ★ تنظيف تلقائي: مسح الضيوف من الداتا بيز كل ٣ أيام
+  (function _cleanOldGuests() {
+    const _3days = 3 * 24 * 60 * 60 * 1000;
+    const _now   = Date.now();
+    get(ref(db, LB_PATH)).then(snap => {
+      if (!snap.exists()) return;
+      const data = snap.val();
+      Object.entries(data).forEach(([key, entry]) => {
+        if (!entry) return;
+        // ضيف قديم: isGuest=true أو key بيبدأ بـ guest__ + updatedAt أكتر من ٣ أيام
+        const isGuest = entry.isGuest || String(key).startsWith('guest__');
+        if (!isGuest) return;
+        const lastSeen = entry.updatedAt || entry.lastPlay || 0;
+        if (_now - lastSeen > _3days) {
+          remove(ref(db, LB_PATH + key)).catch(() => {});
+        }
+      });
+    }).catch(() => {});
+  })();
+
   // ─── migration: انقل bيانات nour_lb للمسار الجديد (مرة واحدة) ───
   get(ref(db, 'nour_lb')).then(snap => {
     if (!snap.exists()) return;
@@ -8473,13 +8493,13 @@ function multiCreateRoom() {
         if (!allSurah) questions = questions.slice(0, parseInt(qCountRaw) || 20);
       } else {
         const qCount = parseInt(qCountRaw) || 20;
-        const allNums = Object.keys(QURAN_LOCAL).map(Number).sort(() => Math.random()-0.5);
-        for (const num of allNums) {
-          if (questions.length >= qCount * 3) break;
-          const qs = buildReviewQuestions(SURAHS_META[num-1]?.[0] || '');
-          questions = questions.concat(qs);
+        // ★ عشوائي حقيقي من كل QURAN_DB (كل المستويات + كل السور)
+        const _allQ = Object.values(QURAN_DB).flat();
+        for (let i = _allQ.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [_allQ[i], _allQ[j]] = [_allQ[j], _allQ[i]];
         }
-        questions = questions.sort(() => Math.random()-0.5).slice(0, qCount);
+        questions = _allQ.slice(0, qCount);
       }
     } finally {
       state.level = _savedLevel;
@@ -9468,12 +9488,7 @@ function _startPolling() {
       }
       // ★ لو المضيف خرج مؤقتاً (واتساب مثلاً) — انتظر ولا تقفل
       if (room.hostOffline && !multiState.isHost) {
-        // المضيف خرج مؤقتاً — أظهر رسالة انتظار بس ما تمسحش الغرفة
-        const _offlineFor = Date.now() - (room.hostOfflineAt || Date.now());
-        if (_offlineFor > 60000) { // لو زاد عن دقيقة
-          showToast('⏳ المضيف غاب أكتر من دقيقة...');
-        }
-        // استمر في المراقبة
+        // المضيف خرج مؤقتاً — استمر في المراقبة بدون رسائل
       }
       window._multiRoomCache = room;
       // Keep alive — كل ٣٠ ثانية بس عشان ما نسبّبش rate limiting
