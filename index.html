@@ -9111,6 +9111,8 @@ function _showMultiResults() {
   clearTimeout(multiState.answerTimer);
   clearInterval(multiState.questionTimer);
   multiState.phase = 'results';
+  // ★ session ID يمنع كتابة نتايج جولة قديمة فوق جولة جديدة
+  const _thisRoundId = multiState._roundId = Date.now();
 
   const pk = multiState.playerKey || multiState.playerName;
   const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
@@ -9127,8 +9129,8 @@ function _showMultiResults() {
         }
       };
       _saveDedicated(1);
-      setTimeout(() => _saveDedicated(1), 1500);
-      setTimeout(() => _saveDedicated(1), 4000);
+      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 1500);
+      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 4000);
     }
 
     const _finalScore = {
@@ -9144,9 +9146,9 @@ function _showMultiResults() {
         p.catch(() => { if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt); });
       }
     };
-    _writeFinal(1);
-    setTimeout(() => _writeFinal(1), 2000);
-    setTimeout(() => _writeFinal(1), 5000);
+    if (multiState._roundId === _thisRoundId) _writeFinal(1);
+    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 2000);
+    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 5000);
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
     }
@@ -9229,13 +9231,53 @@ function _showMultiResults() {
   document.getElementById('multiWinnerName').textContent = winner ? _bestName(winner[1]) : '';
   document.getElementById('multiWinnerMsg').textContent = isWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
 
-  document.getElementById('multiFinalScores').innerHTML = sorted.map(([u, p], i) =>
-    `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
-      <span style="font-size:22px;">${medals[i]||'👤'}</span>
-      <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
-      <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
-    </div>`
-  ).join('');
+  const _renderFinalScores = (sortedList) => {
+    document.getElementById('multiFinalScores').innerHTML = sortedList.map(([u, p], i) =>
+      `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
+        <span style="font-size:22px;">${medals[i]||'👤'}</span>
+        <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
+        <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
+      </div>`
+    ).join('');
+  };
+  _renderFinalScores(sorted);
+
+  // ★ بعد ثانيتين: جيب النتايج الموحدة من Firebase وحدّث العرض
+  setTimeout(() => {
+    if (typeof window.fbMulti === 'undefined' || !multiState.roomCode) return;
+    // ★ نجيب النتايج الموحدة دايماً حتى لو بدأت جولة جديدة (النتايج بتفضل في multiResults)
+    const _resultsDiv = document.getElementById('multiResults');
+    if (!_resultsDiv || _resultsDiv.style.display === 'none') return;
+    window.fbMulti.getRoom(multiState.roomCode, (freshRoom) => {
+      if (!document.getElementById('multiResults') || document.getElementById('multiResults').style.display === 'none') return;
+      if (!freshRoom || !freshRoom.players) return;
+      const freshPlayers = { ...players, ...freshRoom.players };
+      // دمج: خذ الأعلى لكل لاعب
+      Object.keys(freshRoom.players).forEach(u => {
+        const fp = freshRoom.players[u];
+        if (!fp) return;
+        if (!freshPlayers[u]) freshPlayers[u] = fp;
+        else freshPlayers[u] = {
+          ...freshPlayers[u],
+          finalScore: Math.max(_bestScore(freshPlayers[u]), _bestScore(fp)),
+          score:      Math.max(_bestScore(freshPlayers[u]), _bestScore(fp)),
+          name:       fp.name || freshPlayers[u].name,
+        };
+      });
+      const freshSorted = Object.entries(freshPlayers)
+        .filter(([, p]) => p != null)
+        .sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
+      const freshWinner = freshSorted[0];
+      if (freshWinner) {
+        const freshIsWinner = freshWinner[0] === pk;
+        const nameEl = document.getElementById('multiWinnerName');
+        const msgEl  = document.getElementById('multiWinnerMsg');
+        if (nameEl) nameEl.textContent = _bestName(freshWinner[1]);
+        if (msgEl)  msgEl.textContent = freshIsWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
+      }
+      _renderFinalScores(freshSorted);
+    });
+  }, 1500);
 
   // ★ بعد ثانية، نجيب أحدث بيانات من Firebase ونعيد العرض عشان كل اللاعيبة يشوفوا نفس النتيجة
   //    (ده بيحل مشكلة التضارب لو كتابة لاعب على Firebase وصلت متأخرة)
@@ -9536,6 +9578,7 @@ function _startPolling() {
         multiState._startedAt = room.startedAt || Date.now();
         window._lockedScores = {};
         window._prevMultiScores = {};
+        multiState._roundId = Date.now(); // ★ يبطل timeouts الجولة السابقة
         const _expFn2 = window._expandMultiQ || (q => q);
         multiState.questions = (room.questions || []).map(_expFn2);
         multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
