@@ -3689,22 +3689,34 @@ function _sendForgotEmail() {
     window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
   }
 
-  // ★ أظهر شاشة نجاح لذيذة جوا الـ modal لثانية ونص
+  // ★ أظهر animation نجاح — كل العناصر بـ pointer-events:none
   const _fpm = document.getElementById('forgotPassModal');
   if (_fpm) {
     _fpm.style.display = 'flex';
     _fpm.style.pointerEvents = 'none';
     const _fi = _fpm.querySelector('div');
-    if (_fi) _fi.innerHTML =
-      '<div style="text-align:center;padding:32px 16px;">' +
-      '<div style="font-size:64px;margin-bottom:14px;animation:popIn .4s ease;">✅</div>' +
-      '<div style="font-size:20px;font-weight:900;color:#C9973A;font-family:Cairo,sans-serif;margin-bottom:6px;">تم تغيير كلمة المرور</div>' +
-      '<div style="font-size:13px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;">تم الحفظ بنجاح 🤍</div>' +
-      '</div>';
+    if (_fi) {
+      _fi.style.pointerEvents = 'none'; // ★ الحل الجوهري
+      _fi.innerHTML =
+        '<div style="text-align:center;padding:32px 16px;pointer-events:none;">' +
+        '<div style="font-size:64px;margin-bottom:14px;animation:popIn .4s ease;pointer-events:none;">✅</div>' +
+        '<div style="font-size:20px;font-weight:900;color:#C9973A;font-family:Cairo,sans-serif;margin-bottom:6px;pointer-events:none;">تم تغيير كلمة المرور</div>' +
+        '<div style="font-size:13px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;pointer-events:none;">تم الحفظ بنجاح 🤍</div>' +
+        '</div>';
+    }
   }
   setTimeout(() => {
-    // ★ reload — الوحيدة المضمونة على الموبايل (بدون modal artifacts أو keyboard bugs)
-    window.location.reload();
+    // أغلق الـ modal بس — المستخدم فاضل على نفس الصفحة بدون أي تغيير
+    const _fpm2 = document.getElementById('forgotPassModal');
+    if (_fpm2) {
+      _fpm2.style.display = 'none';
+      _fpm2.style.pointerEvents = 'none';
+      _fpm2.style.visibility = 'hidden';
+      const _fi2 = _fpm2.querySelector('div');
+      if (_fi2) _fi2.style.pointerEvents = 'none';
+    }
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    window.scrollTo(0, 0);
   }, 1400);
 }
 
@@ -4046,37 +4058,6 @@ function _finishLogin(username, isGuest) {
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
-  // ★ كشف أي element بيحجب الـ user-bar وإزالته
-  setTimeout(() => {
-    const _bar = document.querySelector('.user-bar');
-    if (_bar) {
-      const _rect = _bar.getBoundingClientRect();
-      const _cx = _rect.left + _rect.width / 2;
-      const _cy = _rect.top + 10;
-      const _top = document.elementFromPoint(_cx, _cy);
-      if (_top && !_bar.contains(_top) && _top !== _bar) {
-        // في element بيحجب الـ user-bar
-        if (_top.style) { _top.style.display = 'none'; _top.style.pointerEvents = 'none'; }
-      }
-    }
-  }, 300);
-
-  // ★ الموبايل: نضيف touchend listeners مباشرة على الأزرار عشان نتجاوز مشاكل onclick
-  setTimeout(() => {
-    // زرار الخروج
-    document.querySelectorAll('[onclick*="doLogout"]').forEach(el => {
-      el.ontouchend = function(e) { e.preventDefault(); doLogout(); };
-    });
-    // زرار تعديل الاسم ✏️
-    document.querySelectorAll('[onclick*="editDisplayName"]').forEach(el => {
-      el.ontouchend = function(e) { e.preventDefault(); e.stopPropagation(); editDisplayName(); };
-    });
-    // زرار حفظ الاسم ✓
-    document.querySelectorAll('[onclick*="_saveNameEdit"]').forEach(el => {
-      el.ontouchend = function(e) { e.preventDefault(); _saveNameEdit(); };
-    });
-  }, 600);
-
   checkStreak();
   renderLevels();
   updateHomeStats();
@@ -7054,6 +7035,8 @@ function goHome() {
 }
 
 window.goHome = goHome;
+
+
 
 // ============================================================
 // ===== DAILY MISTAKES =====
