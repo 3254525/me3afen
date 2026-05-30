@@ -1533,6 +1533,20 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     update(ref(db, 'users/' + key + '/data'), { ...cleanData, updatedAt: Date.now() }).catch(() => {});
   };
 
+  // ★ مسار مستقل للاسم فقط — أسرع وأضمن من data الكاملة
+  window.fbSaveName = function(username, name) {
+    if (!username || !name) return;
+    const key = dataKey(username);
+    return set(ref(db, 'users/' + key + '/name'), name).catch(() => {});
+  };
+  window.fbGetName = function(username, cb) {
+    if (!username) { cb(null); return; }
+    const key = dataKey(username);
+    get(ref(db, 'users/' + key + '/name'))
+      .then(s => cb(s.exists() ? s.val() : null))
+      .catch(() => cb(null));
+  };
+
   // ══════════════════════════════════════════════════════════
   // CLOUD SYNC — غلطات + تقدم السور + المحفوظات
   // ══════════════════════════════════════════════════════════
@@ -1840,27 +1854,23 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 
     const tryGet = (path) => get(ref(db, path)).then(s => s.exists() ? s.val() : null).catch(() => null);
 
-    // اقرأ البيانات من المسار الصحيح
     Promise.all([
       tryGet('users/' + _dbKey + '/data'),
-      tryGet('users/' + _dbKey + '/profile'),
-    ]).then(([fbData_, fbProfile]) => {
+      tryGet('users/' + _dbKey + '/name'),
+    ]).then(([fbData_, fbName]) => {
       const fbData = fbData_ || {};
-
       const _localUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
       const _localData  = _localUsers[realUsername] || {};
-
       const fbScore   = fbData.totalScore   || 0;
       const fbHasanat = fbData.totalHasanat || 0;
       const fbGames   = fbData.totalGames   || 0;
-
       const merged = {
         totalScore:   Math.max(fbScore,   _localData.totalScore   || 0),
         totalGames:   Math.max(fbGames,   _localData.totalGames   || 0),
         totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
         streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
         lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-        name: _localData.name || fbData.name || (fbProfile && fbProfile.name) || (user && user.displayName) || '',
+        name: fbName || _localData.name || fbData.name || (user && user.displayName) || '',
         email: realUsername,
       };
       const doIt = () => {
@@ -3267,7 +3277,7 @@ function doLogin() {
     window.fbLogin(user, pass,
       () => {
         if (typeof window._markAuthDone === 'function') window._markAuthDone();
-        const _finishFresh = (realName, fbData) => {
+        const _finishFresh = (realName, fbData, fbNameOverride) => {
           const lData = users[user] || {};
           const merged = {
             totalScore:   Math.max((fbData && fbData.totalScore)   || 0, lData.totalScore   || 0),
@@ -3275,8 +3285,9 @@ function doLogin() {
             totalHasanat: Math.max((fbData && fbData.totalHasanat) || 0, lData.totalHasanat || 0),
             streak:       Math.max((fbData && fbData.streak)       || 0, lData.streak       || 0),
             lastPlay:     (fbData && fbData.lastPlay) || lData.lastPlay || null,
-            name:         lData.name || (fbData && fbData.name) || realName || user,
-            email:        user,
+            // ★ الاسم: المسار المستقل أولاً، ثم localStorage، ثم data
+            name: fbNameOverride || lData.name || (fbData && fbData.name) || realName || user,
+            email: user,
           };
           try {
             const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
@@ -3290,17 +3301,35 @@ function doLogin() {
             window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
           }
         };
+        // اقرأ البيانات + الاسم المستقل
+        const _key = typeof window._dataKey === 'function' ? window._dataKey(user) : user;
+        const _readName = typeof window.fbGetName === 'function'
+          ? new Promise(res => window.fbGetName(user, res))
+          : Promise.resolve(null);
         if (typeof window.fbGetAccount === 'function') {
-          window.fbGetAccount(user, (realName, fbData) => _finishFresh(realName || user, fbData));
+          Promise.all([
+            new Promise(res => window.fbGetAccount(user, (rn, fd) => res([rn, fd]))),
+            _readName,
+          ]).then(([[realName, fbData], fbName]) => _finishFresh(realName || user, fbData, fbName));
         } else if (typeof window.fbGetUserData === 'function') {
-          window.fbGetUserData(user, (fbData) => _finishFresh(user, fbData));
+          Promise.all([
+            new Promise(res => window.fbGetUserData(user, res)),
+            _readName,
+          ]).then(([fbData, fbName]) => _finishFresh(user, fbData, fbName));
         } else {
-          _finishFresh(user, localData);
+          _finishFresh(user, localData, null);
         }
       },
       (errMsg) => {
         currentUser = null; window.currentUser = null;
         document.getElementById('loginScreen').classList.remove('hide');
+        // ★ Fallback: لو Firebase فشل تماماً وفيه باسورد محلي صح — ادخّل محلياً
+        const _lFresh = getUsers()[user];
+        if (_lFresh && _lFresh.password === btoa(pass)) {
+          document.getElementById('loginScreen').classList.add('hide');
+          loginSuccess(user, _lFresh);
+          return;
+        }
         showLoginErr(errMsg || 'الإيميل أو كلمة المرور خاطئة');
       }
     );
@@ -3697,9 +3726,18 @@ function _saveNameEdit() {
   const n = inp.value.trim();
   if (!n || n.length < 2 || n.length > 30) { showToast('⚠️ الاسم لازم بين ٢ و٣٠ حرف'); return; }
   currentUser.name = n; window.currentUser = currentUser;
+  // ١. حفظ في localStorage فوراً
+  try {
+    const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+    if (!_lu[currentUser.username]) _lu[currentUser.username] = {};
+    _lu[currentUser.username].name = n;
+    localStorage.setItem('nour_users', JSON.stringify(_lu));
+  } catch(e) {}
   saveCurrentUser();
+  // ٢. حفظ في Firebase — مسار مستقل للاسم (الأسرع والأضمن)
+  if (typeof window.fbSaveName === 'function') window.fbSaveName(currentUser.username, n);
+  // ٣. تحديث لوحة الشرف
   if (typeof window.fbSaveUser === 'function') window.fbSaveUser(currentUser.username, { totalHasanat: currentUser.totalHasanat||0, totalScore: currentUser.totalScore||0, totalGames: currentUser.totalGames||0, isGuest: false, name: n });
-  if (typeof window.fbSaveFullUserData === 'function') window.fbSaveFullUserData(currentUser.username, { ...currentUser, name: n, updatedAt: Date.now() });
   const el = document.getElementById('userNameDisplay');
   if (el) el.innerHTML = '👤 ' + n + ' <span style="font-size:11px;opacity:.55;cursor:pointer;color:var(--gold);" onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض">✏️</span>';
   showToast('✅ تم تغيير الاسم: ' + n);
