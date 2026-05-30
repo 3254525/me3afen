@@ -3573,26 +3573,13 @@ function _sendForgotEmail() {
       '</div>';
   }
 }
-// ★ دخول بعد تغيير الباسورد — بيتنادى من زرار صريح بدون timing issues
+// ★ دخول بعد تغيير الباسورد — reload للصفحة عشان نضمن state نظيف على الموبايل
 window._doPassLogin = function() {
   const _p = window._pendingPassLogin || {};
   const email = _p.email || '';
-  const passB64 = _p.passB64 || '';
   if (!email) return;
-  closeForgotPassModal();
-  window._loggedOut = false;
-  const _lData = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}')[email] || {}; } catch(e) { return {}; } })();
-  if (typeof window._markAuthDone === 'function') window._markAuthDone();
-  // أخفِ loginScreen
-  const _ls = document.getElementById('loginScreen');
-  if (_ls) { _ls.classList.add('hide'); _ls.style.pointerEvents = 'none'; _ls.style.display = 'none'; }
-  if (typeof window.loginSuccess === 'function') {
-    window.loginSuccess(email, {
-      ..._lData, email, isGuest: false, password: passB64,
-      name: (typeof window._getStoredName === 'function' ? window._getStoredName(email) : null) || (_lData.name && !_lData.name.includes('@') ? _lData.name : '') || '',
-    });
-  }
-  showToast('✅ أهلاً!');
+  // البيانات محفوظة في localStorage — الـ reload هيدخّله تلقائي
+  window.location.reload();
 };
 window.doForgotPassword = doForgotPassword;
 window.closeForgotPassModal = closeForgotPassModal;
