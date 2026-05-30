@@ -3360,15 +3360,19 @@ function doLogin() {
   if (typeof window.fbLogin === 'function') {
     showLoginErr('⏳ جاري التحقق...');
 
-    // ★ لو المستخدم عنده باسورد محلي صح — ادخّله فوراً ولا تستنى Firebase
+    // ★ لو المستخدم عنده باسورد محلي صح — ادخّله بعد إقفال الـ keyboard
     if (localData && localData.password === btoa(pass)) {
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       if (typeof window._markAuthDone === 'function') window._markAuthDone();
       const _lm = { ...(localData||{}), email: user };
       try { const _lu2=JSON.parse(localStorage.getItem('nour_users')||'{}'); _lu2[user]={...(_lu2[user]||{}),..._lm,password:btoa(pass)}; localStorage.setItem('nour_users',JSON.stringify(_lu2)); localStorage.setItem('nour_last_user',user); } catch(e){}
-      const _lsEl2 = document.getElementById('loginScreen');
-      if (_lsEl2) { _lsEl2.classList.add('hide'); }
-      loginSuccess(user, _lm);
+      // ★ 400ms تستنى الـ keyboard يقفل والـ viewport يستقر
+      setTimeout(() => {
+        const _lsEl2 = document.getElementById('loginScreen');
+        if (_lsEl2) { _lsEl2.classList.add('hide'); }
+        window.scrollTo(0, 0);
+        loginSuccess(user, _lm);
+      }, 400);
       // Firebase في الخلفية
       window.fbLogin(user, pass, () => {}, () => {});
       return;
@@ -3398,9 +3402,13 @@ function doLogin() {
             localStorage.setItem('nour_users', JSON.stringify(_lu));
             localStorage.setItem('nour_last_user', user);
           } catch(e) {}
-          const _lsEl = document.getElementById('loginScreen');
-  if (_lsEl) { _lsEl.classList.add('hide'); }
-          loginSuccess(realName || user, merged);
+          // ★ استنى الـ keyboard يقفل
+          setTimeout(() => {
+            const _lsEl = document.getElementById('loginScreen');
+            if (_lsEl) { _lsEl.classList.add('hide'); }
+            window.scrollTo(0, 0);
+            loginSuccess(realName || user, merged);
+          }, 400);
           if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
             window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
           }
@@ -3472,7 +3480,11 @@ function doRegister() {
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
 
-  // ★ مهم: نمسح أي session قديمة عشان loginSuccess ما تتعطّلش
+  // ★ إظهار loading
+  showLoginErr('⏳ جاري إنشاء الحساب...');
+  const _regBtn = document.querySelector('#registerForm .login-btn');
+  if (_regBtn) { _regBtn.disabled = true; _regBtn.textContent = '⏳ جاري...'; }
+
   currentUser = null;
   window.currentUser = null;
   if (typeof window._resetAuthDone === 'function') window._resetAuthDone();
@@ -3489,19 +3501,52 @@ function doRegister() {
       localStorage.setItem('nour_name_' + email, name);
       const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
       if (!_lu[email]) _lu[email] = {};
-      _lu[email].name = name; _lu[email].email = email;
+      _lu[email].name = name;
+      _lu[email].email = email;
+      _lu[email].password = btoa(pass); // ★ تأكيد حفظ الباسورد
       localStorage.setItem('nour_users', JSON.stringify(_lu));
       localStorage.setItem('nour_last_user', email);
     } catch(e) {}
-    // ★ حفظ في Firebase
-    if (typeof window.fbSaveName === 'function') window.fbSaveName(email, name);
-    if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, Object.assign({}, defaultData, { isGuest: false, name }));
-    if (typeof window._markAuthDone === 'function') window._markAuthDone();
-    window._registering = false;
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    loginSuccess(email, defaultData);
+    // ★ تحقق من تكرار الاسم في لوحة الشرف — لو موجود أضف رقم تلقائياً
+    const _toAr = n => String(n).replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[d]);
+    const _doFinishReg = (finalName) => {
+      defaultData.name = finalName;
+      try {
+        const _lu2 = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        if (_lu2[email]) { _lu2[email].name = finalName; localStorage.setItem('nour_users', JSON.stringify(_lu2)); }
+        localStorage.setItem('nour_name_' + email, finalName);
+      } catch(e) {}
+      if (typeof window.fbSaveName === 'function') window.fbSaveName(email, finalName);
+      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, Object.assign({}, defaultData, { isGuest: false, name: finalName }));
+      if (typeof window._markAuthDone === 'function') window._markAuthDone();
+      window._registering = false;
+      const _b = document.querySelector('#registerForm .login-btn');
+      if (_b) { _b.disabled = false; _b.textContent = 'إنشاء الحساب 🌟'; }
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      loginSuccess(email, defaultData);
+    };
+    // نجيب قائمة الأسماء الموجودة ونشوف لو في تكرار
+    try {
+      const _lbData = (window._lbAllList || []).map(([,d]) => d && d.name ? d.name.trim() : '');
+      const _sameName = _lbData.filter(n => n && (n === name || n.replace(/\s*[١٢٣٤٥٦٧٨٩٠\d]+$/, '').trim() === name));
+      if (_sameName.length === 0) {
+        _doFinishReg(name);
+      } else {
+        // اعطيه الرقم التالي
+        let _num = 2;
+        while (_sameName.includes(name + ' ' + _toAr(_num))) _num++;
+        _doFinishReg(name + ' ' + _toAr(_num));
+      }
+    } catch(e) {
+      _doFinishReg(name);
+    }
   };
-  const _onErr = (errMsg) => { window._registering = false; showLoginErr(errMsg); };
+  const _onErr = (errMsg) => {
+    window._registering = false;
+    showLoginErr(errMsg);
+    const _b = document.querySelector('#registerForm .login-btn');
+    if (_b) { _b.disabled = false; _b.textContent = 'إنشاء الحساب 🌟'; }
+  };
 
   const _tryRegister = (attempt) => {
     if (typeof window.fbRegister !== 'function') {
@@ -3978,10 +4023,11 @@ window.doDeleteAccount = doDeleteAccount;
 
 
 function _finishLogin(username, isGuest) {
-  // ★ إخفاء loginScreen وإظهار homeScreen — بسيط وبدون تعقيد
+  // ★ إخفاء loginScreen وإظهار homeScreen
   const _lsEl = document.getElementById('loginScreen');
   if (_lsEl) { _lsEl.classList.add('hide'); _lsEl.style.cssText += ';display:none!important;pointer-events:none!important;'; }
   showScreen('homeScreen');
+  window.scrollTo(0, 0); // ★ الموبايل: تأكيد إن الصفحة في الأعلى والأزرار قابلة للضغط
 
   // ★ الاسم: جرب كل المصادر بالترتيب
   if (currentUser) {
