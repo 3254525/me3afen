@@ -1555,13 +1555,10 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     const _doWrite = () => Promise.all([
       set(ref(db, 'users/' + key + '/name'), name).catch(() => {}),
       update(ref(db, 'users/' + key + '/data'), { name, updatedAt: Date.now() }).catch(() => {}),
+      update(ref(db, 'leaderboard/' + key), { name, updatedAt: Date.now() }).catch(() => {}),
     ]);
     if (auth.currentUser) { _doWrite(); return; }
-    // مفيش session — جرّب anonymous ثم اكتب
-    signInAnonymously(auth).then(_doWrite).catch(() => {
-      // آخر محاولة بدون auth (لو قواعد Firebase سمحت)
-      _doWrite().catch(() => {});
-    });
+    signInAnonymously(auth).then(_doWrite).catch(() => { _doWrite().catch(() => {}); });
   };
   window.fbGetName = function(username, cb) {
     if (!username) { cb(null); return; }
@@ -1897,7 +1894,8 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     Promise.all([
       tryGet('users/' + _dbKey + '/data'),
       tryGet('users/' + _dbKey + '/name'),
-    ]).then(([fbData_, fbName]) => {
+      tryGet('leaderboard/' + _dbKey),
+    ]).then(([fbData_, fbName, lbData]) => {
       const fbData = fbData_ || {};
       const _localUsers = (() => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}'); } catch(e) { return {}; } })();
       const _localData  = _localUsers[realUsername] || {};
@@ -1910,7 +1908,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         totalHasanat: Math.max(fbHasanat, _localData.totalHasanat || 0),
         streak:       Math.max(fbData.streak || 0, _localData.streak || 0),
         lastPlay:     fbData.lastPlay || _localData.lastPlay || null,
-        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || fbData.name || (user && user.displayName && !user.displayName.includes('@') ? user.displayName : null) || '',
+        name: (typeof window._getStoredName === 'function' ? window._getStoredName(realUsername) : null) || fbName || _localData.name || (fbData && fbData.name && !fbData.name.includes('@') ? fbData.name : null) || (lbData && lbData.name && !lbData.name.includes('@') ? lbData.name : null) || (user && user.displayName && !user.displayName.includes('@') ? user.displayName : null) || '',
         email: realUsername,
       };
       const doIt = () => {
