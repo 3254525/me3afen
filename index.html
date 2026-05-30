@@ -1605,6 +1605,46 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     if (_nameUnsub) { _nameUnsub(); _nameUnsub = null; }
   };
 
+  // ★ listener لتحديث نقاط المستخدم لحظياً على كل الأجهزة
+  let _dataUnsub = null;
+  window.fbWatchUserData = function(username) {
+    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
+    if (!username) return;
+    const key = dataKey(username);
+    _dataUnsub = onValue(ref(db, 'users/' + key + '/data'), (snap) => {
+      if (!snap.exists()) return;
+      const fbData = snap.val();
+      if (!fbData) return;
+      const cu = window.currentUser;
+      if (!cu || cu.username !== username) return;
+      // ★ خذ الأعلى دايماً (مش بنخسر نقاط)
+      const changed =
+        (fbData.totalHasanat || 0) > (cu.totalHasanat || 0) ||
+        (fbData.totalScore   || 0) > (cu.totalScore   || 0) ||
+        (fbData.totalGames   || 0) > (cu.totalGames   || 0);
+      if (!changed) return;
+      cu.totalHasanat = Math.max(cu.totalHasanat || 0, fbData.totalHasanat || 0);
+      cu.totalScore   = Math.max(cu.totalScore   || 0, fbData.totalScore   || 0);
+      cu.totalGames   = Math.max(cu.totalGames   || 0, fbData.totalGames   || 0);
+      window.currentUser = cu;
+      // حفظ في localStorage
+      try {
+        const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        if (_lu[username]) {
+          _lu[username].totalHasanat = cu.totalHasanat;
+          _lu[username].totalScore   = cu.totalScore;
+          _lu[username].totalGames   = cu.totalGames;
+          localStorage.setItem('nour_users', JSON.stringify(_lu));
+        }
+      } catch(e) {}
+      // تحديث الـ UI فوراً
+      if (typeof updateHomeStats === 'function') updateHomeStats();
+    });
+  };
+  window.fbUnwatchUserData = function() {
+    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
+  };
+
   // ★ اقرأ الاسم من localStorage بكل الطرق
   window._getStoredName = function(email) {
     if (!email) return null;
@@ -4067,7 +4107,8 @@ function _finishLogin(username, isGuest) {
   const _el = document.getElementById('userNameDisplay');
   _el.innerHTML = '👤 ' + _disp + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
   if (typeof window.fbSignInAnon === 'function' && !isGuest) window.fbSignInAnon();
-  if (typeof window.fbWatchName === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
+  if (typeof window.fbWatchName     === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
+  if (typeof window.fbWatchUserData  === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchUserData(username);
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
@@ -8973,6 +9014,16 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
     }
   }
   document.getElementById('multiMyScore').textContent = toArabicNum(multiState.myScore);
+
+  // ★ تحديث فوري للـ cache المحلي عشان _updateMultiLiveScores تعكس السكور الجديد بدون انتظار Firebase
+  if (window._multiRoomCache && window._multiRoomCache.players) {
+    const _pk = multiState.playerKey || multiState.playerName;
+    if (window._multiRoomCache.players[_pk]) {
+      window._multiRoomCache.players[_pk].score    = multiState.myScore;
+      window._multiRoomCache.players[_pk].answered = true;
+    }
+  }
+  _updateMultiLiveScores();
 
   wrap.querySelectorAll('button').forEach(b => {
     const ch = b.dataset.ch;
