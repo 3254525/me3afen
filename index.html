@@ -3817,9 +3817,9 @@ function doLogout() {
   window.currentUser = null;
   window._lbAllList = null;
   try { localStorage.removeItem('nour_last_user'); } catch(e) {}
-  if (typeof window._resetAuthDone === 'function') window._resetAuthDone();
+  // ★ مش بنعمل _resetAuthDone هنا عشان ما يدخّلوش تاني قبل ما signOut يخلص
+  // onAuthStateChanged(null) هو اللي هيعمل _authDone = false لما signOut يكتمل
   if (typeof window.fbLogout === 'function') window.fbLogout();
-  // ★ أظهر شاشة الدخول مباشرة بدون goHome
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('show'));
   document.getElementById('homeScreen') && document.getElementById('homeScreen').classList.add('show');
   document.getElementById('loginScreen').classList.remove('hide');
@@ -4942,21 +4942,35 @@ function switchFilterTab(tab) {
   if (surahPanel) surahPanel.style.display = tab==='surah' ? 'block' : 'none';
   if (juzPanel)   juzPanel.style.display   = tab==='juz'   ? 'block' : 'none';
 
-  // ★ التنقل بين التابين ما يأثرش على السلايدر أو العدد أبداً
-  // بس نمسح الفلتر التاني عشان ما يكونش الاتنين محددين مع بعض
   if (tab==='surah') {
+    // مسح الجزء
     selectedJuz = '';
     const jl = document.getElementById('juzDropdownLabel');
     if (jl) jl.textContent = '📖 كل الأجزاء (عشوائي)';
+    // لو مفيش سورة مختارة — رجّع العدد للـ default
+    if (!selectedSurah) {
+      selectedQCount = _defaultQCount;
+      const qd = document.getElementById('qcountDisplay');
+      if (qd) qd.textContent = toArabicNum(selectedQCount);
+      _hideDualSlider();
+      updateQcountSliderMax();
+    }
   } else {
+    // مسح السورة
     selectedSurah = '';
     selectedFromAyah = 1; selectedToAyah = null;
     const sl = document.getElementById('surahDropdownLabel');
     if (sl) sl.textContent = '🌿 كل السور (عشوائي)';
     _hideDualSlider();
+    // لو مفيش جزء مختار — رجّع العدد للـ default
+    if (!selectedJuz) {
+      selectedQCount = _defaultQCount;
+      const qd = document.getElementById('qcountDisplay');
+      if (qd) qd.textContent = toArabicNum(selectedQCount);
+      updateQcountSliderMax();
+    }
   }
   const sh = document.getElementById('surahHint');
-  if (sh) sh.textContent = '';
   if (sh) sh.textContent = '';
 }
 
