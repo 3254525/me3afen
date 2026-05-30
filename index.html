@@ -3689,15 +3689,28 @@ function _sendForgotEmail() {
     window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
   }
 
-  // ★ أغلق الـ modal فوراً وأظهر toast بدون أي animation تعبث بالـ touch layer
+  // ★ أغلق الـ modal أولاً — مهم جداً على iOS قبل أي animation
   const _fpm = document.getElementById('forgotPassModal');
   if (_fpm) {
     _fpm.style.display = 'none';
     _fpm.style.pointerEvents = 'none';
     _fpm.style.visibility = 'hidden';
   }
-  if (typeof showToast === 'function') showToast('✅ تم تغيير كلمة المرور بنجاح');
   window.scrollTo(0, 0);
+
+  // ★ animation في عنصر مؤقت منفصل تماماً عن الـ modal
+  const _overlay = document.createElement('div');
+  _overlay.style.cssText = 'position:fixed;inset:0;z-index:5000;display:flex;align-items:center;justify-content:center;pointer-events:none;';
+  _overlay.innerHTML =
+    '<div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.4);border-radius:20px;padding:32px 40px;text-align:center;pointer-events:none;box-shadow:0 8px 40px rgba(0,0,0,0.7);">' +
+    '<div style="font-size:64px;margin-bottom:12px;animation:popIn .4s ease;pointer-events:none;">✅</div>' +
+    '<div style="font-size:18px;font-weight:900;color:#C9973A;font-family:Cairo,sans-serif;pointer-events:none;">تم تغيير كلمة المرور</div>' +
+    '<div style="font-size:12px;color:rgba(245,217,139,0.5);margin-top:6px;font-family:Cairo,sans-serif;pointer-events:none;">تم الحفظ بنجاح 🤍</div>' +
+    '</div>';
+  document.body.appendChild(_overlay);
+  setTimeout(() => {
+    if (_overlay.parentNode) _overlay.parentNode.removeChild(_overlay);
+  }, 1500);
 }
 
 window.doForgotPassword = doForgotPassword;
