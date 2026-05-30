@@ -8733,14 +8733,15 @@ function _startMultiGame() {
   multiState.myScore = 0;
   multiState._peakScore = 0;
   multiState._scoreSavedThisRound = false;
-  multiState._startedAt = Date.now(); // ★ نحفظ وقت البداية للكشف عن جولة جديدة
-  // ★ تصفير كل الـ caches عشان ما يظهرش نقاط الجولة السابقة
+  multiState._startedAt = Date.now();
   window._lockedScores = {};
   window._prevMultiScores = {};
-  // تصفير عداد النقاط على الشاشة
   const scoreEl = document.getElementById('multiMyScore');
   if (scoreEl) scoreEl.textContent = toArabicNum(0);
-  document.getElementById('multiWaiting').style.display = 'none';
+  // ★ إخفاء النتايج القديمة + تصفير النقاط اللحظية
+  document.getElementById('multiResults').style.display  = 'none';
+  document.getElementById('multiLiveScores').innerHTML   = '';
+  document.getElementById('multiWaiting').style.display  = 'none';
   document.getElementById('multiGameArea').style.display = 'block';
   document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
   _renderMultiQuestion();
