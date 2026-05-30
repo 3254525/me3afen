@@ -1879,6 +1879,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   window._markAuthDone  = () => { _authDone = true;  };
 
   onAuthStateChanged(auth, (user) => {
+    if (window._isLoggingOut) return; // ★ logout جاري — امنع أي re-login
     // ★ لو اليوزر طلب logout صريح — منعملش أي دخول تلقائي
     if (!user) {
       _authDone = false;
@@ -4014,6 +4015,7 @@ function _finishLogin(username, isGuest) {
 }
 
 function doLogout() {
+  window._isLoggingOut = true;
   window._loggedOut = true;
   window._cancelBgAuth = true;
   if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName(); // ★ أوقف أي background Firebase auth
@@ -4040,6 +4042,7 @@ function doLogout() {
     _lsOut.style.pointerEvents = '';
     _lsOut.style.cssText = _lsOut.style.cssText.replace(/display[^;]*;?/g,'').replace(/pointer-events[^;]*;?/g,'');
   }
+  setTimeout(() => { window._isLoggingOut = false; }, 1500);
 }
 
 function saveCurrentUser() {
