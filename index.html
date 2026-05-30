@@ -1439,8 +1439,11 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
           .then(() => _writeBypass())
           .then(() => onSuccess('firebase'))
           .catch(() => {
-            // ٣. مفيش session — احفظ محلياً فقط وادخّله
-            onSuccess('local');
+            // ٣. مفيش session — جرّب anonymous auth عشان نكتب bypassAuth
+            signInAnonymously(auth)
+              .then(() => _writeBypass())
+              .then(() => onSuccess('bypass'))
+              .catch(() => onSuccess('local')); // آخر خيار: محلي بس
           });
       });
   };
@@ -1531,11 +1534,14 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
     update(ref(db, 'users/' + key + '/data'), { ...cleanData, updatedAt: Date.now() }).catch(() => {});
   };
 
-  // ★ مسار مستقل للاسم فقط — أسرع وأضمن من data الكاملة
+  // ★ مسار مستقل للاسم — مع anonymous fallback لضمان الكتابة
   window.fbSaveName = function(username, name) {
     if (!username || !name) return;
     const key = dataKey(username);
-    return set(ref(db, 'users/' + key + '/name'), name).catch(() => {});
+    const _doWrite = () => set(ref(db, 'users/' + key + '/name'), name).catch(() => {});
+    if (auth.currentUser) return _doWrite();
+    // مفيش session — جرّب anonymous
+    return signInAnonymously(auth).then(_doWrite).catch(_doWrite);
   };
   window.fbGetName = function(username, cb) {
     if (!username) { cb(null); return; }
@@ -1887,6 +1893,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         email: realUsername,
       };
       const doIt = () => {
+        if (window._loggedOut) return; // لو خرج أثناء التحميل
         if (typeof window.loginSuccess === 'function') {
           window.loginSuccess(realUsername, merged);
           if (merged.totalScore > fbScore || merged.totalHasanat > fbHasanat || merged.totalGames > fbGames) {
@@ -1914,6 +1921,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
         email:        realUsername,
       };
       const doIt2 = () => {
+        if (window._loggedOut) return;
         if (typeof window.loginSuccess === 'function') window.loginSuccess(realUsername, fallbackData);
         else setTimeout(doIt2, 30);
       };
@@ -3292,6 +3300,7 @@ function doLogin() {
       () => {
         if (typeof window._markAuthDone === 'function') window._markAuthDone();
         const _finishFresh = (realName, fbData, fbNameOverride) => {
+          if (window._loggedOut) return; // لو خرج أثناء التحميل
           const lData = users[user] || {};
           const merged = {
             totalScore:   Math.max((fbData && fbData.totalScore)   || 0, lData.totalScore   || 0),
@@ -3339,7 +3348,7 @@ function doLogin() {
         document.getElementById('loginScreen').classList.remove('hide');
         // ★ Fallback: لو Firebase فشل تماماً وفيه باسورد محلي صح — ادخّل محلياً
         const _lFresh = getUsers()[user];
-        if (_lFresh && _lFresh.password === btoa(pass)) {
+        if (!window._loggedOut && _lFresh && _lFresh.password === btoa(pass)) {
           document.getElementById('loginScreen').classList.add('hide');
           loginSuccess(user, _lFresh);
           return;
@@ -3498,6 +3507,8 @@ function _sendForgotEmail() {
     const _getLocal = () => { try { return JSON.parse(localStorage.getItem('nour_users') || '{}')[email] || {}; } catch(e) { return {}; } };
 
     const _finishLogin = (fbData) => {
+      // ★ لو المستخدم عمل خروج أثناء التحميل — لا ندخّله
+      if (window._loggedOut) return;
       const lData = _getLocal();
       const mergedData = {
         ...(fbData || {}),
