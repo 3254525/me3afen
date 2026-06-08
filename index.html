@@ -131,6 +131,14 @@
 ]
 </script>
 
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#C9973A">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="نور">
+<meta property="og:title" content="نور - تحدي حفظ القرآن الكريم">
+<meta property="og:description" content="اختبر حفظك للقرآن الكريم بصوت الشيخ مشاري بن راشد العفاسي">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
@@ -230,6 +238,7 @@ body:has(#loginScreen:not(.hide)) { overflow:hidden; }
   top:50%; left:50%; transform:translate(-50%,-50%);
   animation:art-breathe 4s ease-in-out infinite;
 }
+@keyframes popIn { 0%{transform:scale(0.3);opacity:0;} 60%{transform:scale(1.2);opacity:1;} 100%{transform:scale(1);} }
 @keyframes art-breathe {
   0%,100% { transform:translate(-50%,-50%) scale(1); opacity:0.6; }
   50% { transform:translate(-50%,-50%) scale(1.15); opacity:1; }
@@ -1323,7 +1332,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       .catch(e => {
         const code = e && e.code;
         if (code === 'auth/email-already-in-use' || code === 'auth/email-already-exists') {
-          onError('⚠️ الاسم ده محجوز ومستخدَم قبل كده — اختار اسم تاني، أو سجّل دخولك من تبويب «دخول».');
+          onError('📧 الإيميل ده مسجّل بالفعل — اختار «دخول» وادخل بباسوردك.');
         }
         else if (code === 'auth/operation-not-allowed' || code === 'auth/configuration-not-found') {
           onError('⛔ خدمة الحسابات مش مفعّلة في Firebase. المالك لازم يفعّل Email/Password من: Firebase Console ← Authentication ← Sign-in method ← Email/Password ← Enable.');
@@ -1420,8 +1429,8 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
       new Promise((_, rej) => setTimeout(() => rej('timeout'), 6000)),
     ]);
 
-    // ★ خطوة ١: لو في session حالية مش anonymous → اكتب مباشرة
-    if (auth.currentUser && !auth.currentUser.isAnonymous) {
+    // ★ خطوة ١: لو في أي session (حتى anonymous) → اكتب مباشرة
+    if (auth.currentUser) {
       _writeBypass()
         .then(() => onSuccess('bypass'))
         .catch(() => onSuccess('local'));
@@ -1594,6 +1603,46 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   };
   window.fbUnwatchName = function() {
     if (_nameUnsub) { _nameUnsub(); _nameUnsub = null; }
+  };
+
+  // ★ listener لتحديث نقاط المستخدم لحظياً على كل الأجهزة
+  let _dataUnsub = null;
+  window.fbWatchUserData = function(username) {
+    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
+    if (!username) return;
+    const key = dataKey(username);
+    _dataUnsub = onValue(ref(db, 'users/' + key + '/data'), (snap) => {
+      if (!snap.exists()) return;
+      const fbData = snap.val();
+      if (!fbData) return;
+      const cu = window.currentUser;
+      if (!cu || cu.username !== username) return;
+      // ★ خذ الأعلى دايماً (مش بنخسر نقاط)
+      const changed =
+        (fbData.totalHasanat || 0) > (cu.totalHasanat || 0) ||
+        (fbData.totalScore   || 0) > (cu.totalScore   || 0) ||
+        (fbData.totalGames   || 0) > (cu.totalGames   || 0);
+      if (!changed) return;
+      cu.totalHasanat = Math.max(cu.totalHasanat || 0, fbData.totalHasanat || 0);
+      cu.totalScore   = Math.max(cu.totalScore   || 0, fbData.totalScore   || 0);
+      cu.totalGames   = Math.max(cu.totalGames   || 0, fbData.totalGames   || 0);
+      window.currentUser = cu;
+      // حفظ في localStorage
+      try {
+        const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        if (_lu[username]) {
+          _lu[username].totalHasanat = cu.totalHasanat;
+          _lu[username].totalScore   = cu.totalScore;
+          _lu[username].totalGames   = cu.totalGames;
+          localStorage.setItem('nour_users', JSON.stringify(_lu));
+        }
+      } catch(e) {}
+      // تحديث الـ UI فوراً
+      if (typeof updateHomeStats === 'function') updateHomeStats();
+    });
+  };
+  window.fbUnwatchUserData = function() {
+    if (_dataUnsub) { _dataUnsub(); _dataUnsub = null; }
   };
 
   // ★ اقرأ الاسم من localStorage بكل الطرق
@@ -1871,6 +1920,7 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   window._markAuthDone  = () => { _authDone = true;  };
 
   onAuthStateChanged(auth, (user) => {
+    if (window._isLoggingOut) return; // ★ logout جاري — امنع أي re-login
     // ★ لو اليوزر طلب logout صريح — منعملش أي دخول تلقائي
     if (!user) {
       _authDone = false;
@@ -2282,6 +2332,26 @@ html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   }
   _attachLbListener();
 
+  // ★ تنظيف تلقائي: مسح الضيوف من الداتا بيز كل ٣ أيام
+  (function _cleanOldGuests() {
+    const _3days = 3 * 24 * 60 * 60 * 1000;
+    const _now   = Date.now();
+    get(ref(db, LB_PATH)).then(snap => {
+      if (!snap.exists()) return;
+      const data = snap.val();
+      Object.entries(data).forEach(([key, entry]) => {
+        if (!entry) return;
+        // ضيف قديم: isGuest=true أو key بيبدأ بـ guest__ + updatedAt أكتر من ٣ أيام
+        const isGuest = entry.isGuest || String(key).startsWith('guest__');
+        if (!isGuest) return;
+        const lastSeen = entry.updatedAt || entry.lastPlay || 0;
+        if (_now - lastSeen > _3days) {
+          remove(ref(db, LB_PATH + key)).catch(() => {});
+        }
+      });
+    }).catch(() => {});
+  })();
+
   // ─── migration: انقل bيانات nour_lb للمسار الجديد (مرة واحدة) ───
   get(ref(db, 'nour_lb')).then(snap => {
     if (!snap.exists()) return;
@@ -2568,7 +2638,7 @@ function _callWhenReady(fn, args) {
       <div class="login-field">
         <label>كلمة المرور</label>
         <div class="pw-wrap">
-          <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="٦ أحرف على الأقل">
+          <input type="password" id="regPass" name="new-password" autocomplete="new-password" placeholder="٤ أحرف على الأقل">
           <button type="button" class="pw-eye" onclick="togglePw('regPass',this)" title="إظهار/إخفاء">👁</button>
         </div>
       </div>
@@ -2598,7 +2668,8 @@ function _callWhenReady(fn, args) {
       <div class="logo-title">نـور</div>
       <div class="logo-sub">تحدي حفظ القرآن الكريم</div>
       <div style="display:inline-block;margin-top:6px;padding:3px 12px;background:rgba(201,151,58,0.12);border:1px solid rgba(201,151,58,0.35);border-radius:20px;font-size:10px;color:rgba(245,217,139,0.7);letter-spacing:0.5px;">★ الموقع الرسمي الوحيد ★</div>
-      <div style="margin-top:6px;font-size:10px;color:rgba(245,217,139,0.4);">(حقوق الصوت محمية للشيخ مشاري بن راشد العفاسي)</div>
+      <div style="margin-top:6px;font-size:10px;color:rgba(245,217,139,0.4);">الصوت: الشيخ مشاري بن راشد العفاسي — جميع الحقوق محفوظة</div>
+      <div style="margin-top:4px;font-size:10px;"><a href="privacy-policy.html" target="_blank" style="color:rgba(201,151,58,0.4);text-decoration:none;">سياسة الخصوصية</a></div>
     </div>
 
     <!-- USER BAR -->
@@ -2609,7 +2680,7 @@ function _callWhenReady(fn, args) {
         <span style="font-size:13px;color:var(--gold);" id="userLevelDisplay">المستوى ١</span>
         <span class="user-logout" onclick="resetScore()" style="color:rgba(255,120,100,0.5);" title="تصفير النقاط">🔄</span>
         <span class="user-logout" onclick="doDeleteAccount()" style="color:rgba(255,80,80,0.45);font-size:11px;" title="حذف الحساب نهائياً">🗑️</span>
-        <button onclick="doLogout()" style="background:none;border:none;font-size:13px;color:rgba(245,217,139,0.55);cursor:pointer;font-family:'Cairo',sans-serif;padding:6px 10px;border-radius:8px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">خروج ↩</button>
+        <button onclick="doLogout()" ontouchend="event.preventDefault();doLogout();" style="background:none;border:none;font-size:13px;color:rgba(245,217,139,0.55);cursor:pointer;font-family:'Cairo',sans-serif;padding:6px 10px;border-radius:8px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">خروج ↩</button>
       </div>
     </div>
 
@@ -3348,9 +3419,30 @@ function doLogin() {
   // الـ local check بيتعمل جوّا fbLogin لو مفيش إنترنت
   if (typeof window.fbLogin === 'function') {
     showLoginErr('⏳ جاري التحقق...');
+
+    // ★ لو المستخدم عنده باسورد محلي صح — ادخّله بعد إقفال الـ keyboard
+    if (localData && localData.password === btoa(pass)) {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      if (typeof window._markAuthDone === 'function') window._markAuthDone();
+      const _lm = { ...(localData||{}), email: user };
+      try { const _lu2=JSON.parse(localStorage.getItem('nour_users')||'{}'); _lu2[user]={...(_lu2[user]||{}),..._lm,password:btoa(pass)}; localStorage.setItem('nour_users',JSON.stringify(_lu2)); localStorage.setItem('nour_last_user',user); } catch(e){}
+      // ★ 400ms تستنى الـ keyboard يقفل والـ viewport يستقر
+      setTimeout(() => {
+        const _lsEl2 = document.getElementById('loginScreen');
+        if (_lsEl2) { _lsEl2.classList.add('hide'); }
+        window.scrollTo(0, 0);
+        loginSuccess(user, _lm);
+      }, 400);
+      // Firebase في الخلفية
+      window.fbLogin(user, pass, () => {}, () => {});
+      return;
+    }
+
     window.fbLogin(user, pass,
       () => {
         if (typeof window._markAuthDone === 'function') window._markAuthDone();
+        // ★ blur أي input نشط عشان الـ keyboard يقفل على الموبايل
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
         const _finishFresh = (realName, fbData, fbNameOverride) => {
           if (window._loggedOut) return; // لو خرج أثناء التحميل
           const lData = users[user] || {};
@@ -3370,9 +3462,13 @@ function doLogin() {
             localStorage.setItem('nour_users', JSON.stringify(_lu));
             localStorage.setItem('nour_last_user', user);
           } catch(e) {}
-          const _lsEl = document.getElementById('loginScreen');
-  if (_lsEl) { _lsEl.classList.add('hide'); }
-          loginSuccess(realName || user, merged);
+          // ★ استنى الـ keyboard يقفل
+          setTimeout(() => {
+            const _lsEl = document.getElementById('loginScreen');
+            if (_lsEl) { _lsEl.classList.add('hide'); }
+            window.scrollTo(0, 0);
+            loginSuccess(realName || user, merged);
+          }, 400);
           if (typeof window.fbSaveUser === 'function' && merged.totalScore > 0) {
             window.fbSaveUser(user, Object.assign({}, merged, {isGuest: false}));
           }
@@ -3444,7 +3540,11 @@ function doRegister() {
   if (pass.length < 4) { showLoginErr('كلمة المرور يجب أن تكون ٤ أحرف على الأقل'); return; }
   if (pass !== pass2) { showLoginErr('كلمتا المرور غير متطابقتين'); return; }
 
-  // ★ مهم: نمسح أي session قديمة عشان loginSuccess ما تتعطّلش
+  // ★ إظهار loading
+  showLoginErr('⏳ جاري إنشاء الحساب...');
+  const _regBtn = document.querySelector('#registerForm .login-btn');
+  if (_regBtn) { _regBtn.disabled = true; _regBtn.textContent = '⏳ جاري...'; }
+
   currentUser = null;
   window.currentUser = null;
   if (typeof window._resetAuthDone === 'function') window._resetAuthDone();
@@ -3453,20 +3553,60 @@ function doRegister() {
   // نجاح التسجيل في Firebase
   const _onReg = () => {
     const defaultData = createDefaultUserData();
-    defaultData.name     = name;  // الاسم للعرض
-    defaultData.email    = email; // نحفظ الإيميل للرجوع إليه
-    defaultData.username = email; // الإيميل هو المعرّف
-    if (typeof window.fbSaveFullUserData === 'function') {
-      window.fbSaveFullUserData(email, defaultData);
+    defaultData.name     = name;
+    defaultData.email    = email;
+    defaultData.username = email;
+    // ★ حفظ الاسم في localStorage
+    try {
+      localStorage.setItem('nour_name_' + email, name);
+      const _lu = JSON.parse(localStorage.getItem('nour_users') || '{}');
+      if (!_lu[email]) _lu[email] = {};
+      _lu[email].name = name;
+      _lu[email].email = email;
+      _lu[email].password = btoa(pass); // ★ تأكيد حفظ الباسورد
+      localStorage.setItem('nour_users', JSON.stringify(_lu));
+      localStorage.setItem('nour_last_user', email);
+    } catch(e) {}
+    // ★ تحقق من تكرار الاسم في لوحة الشرف — لو موجود أضف رقم تلقائياً
+    const _toAr = n => String(n).replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[d]);
+    const _doFinishReg = (finalName) => {
+      defaultData.name = finalName;
+      try {
+        const _lu2 = JSON.parse(localStorage.getItem('nour_users') || '{}');
+        if (_lu2[email]) { _lu2[email].name = finalName; localStorage.setItem('nour_users', JSON.stringify(_lu2)); }
+        localStorage.setItem('nour_name_' + email, finalName);
+      } catch(e) {}
+      if (typeof window.fbSaveName === 'function') window.fbSaveName(email, finalName);
+      if (typeof window.fbSaveUser === 'function') window.fbSaveUser(email, Object.assign({}, defaultData, { isGuest: false, name: finalName }));
+      if (typeof window._markAuthDone === 'function') window._markAuthDone();
+      window._registering = false;
+      const _b = document.querySelector('#registerForm .login-btn');
+      if (_b) { _b.disabled = false; _b.textContent = 'إنشاء الحساب 🌟'; }
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      loginSuccess(email, defaultData);
+    };
+    // نجيب قائمة الأسماء الموجودة ونشوف لو في تكرار
+    try {
+      const _lbData = (window._lbAllList || []).map(([,d]) => d && d.name ? d.name.trim() : '');
+      const _sameName = _lbData.filter(n => n && (n === name || n.replace(/\s*[١٢٣٤٥٦٧٨٩٠\d]+$/, '').trim() === name));
+      if (_sameName.length === 0) {
+        _doFinishReg(name);
+      } else {
+        // اعطيه الرقم التالي
+        let _num = 2;
+        while (_sameName.includes(name + ' ' + _toAr(_num))) _num++;
+        _doFinishReg(name + ' ' + _toAr(_num));
+      }
+    } catch(e) {
+      _doFinishReg(name);
     }
-    if (typeof window.fbSaveUser === 'function') {
-      window.fbSaveUser(email, Object.assign({}, defaultData, { isGuest: false, name: name }));
-    }
-    if (typeof window._markAuthDone === 'function') window._markAuthDone();
-    window._registering = false;
-    loginSuccess(email, defaultData);
   };
-  const _onErr = (errMsg) => { window._registering = false; showLoginErr(errMsg); };
+  const _onErr = (errMsg) => {
+    window._registering = false;
+    showLoginErr(errMsg);
+    const _b = document.querySelector('#registerForm .login-btn');
+    if (_b) { _b.disabled = false; _b.textContent = 'إنشاء الحساب 🌟'; }
+  };
 
   const _tryRegister = (attempt) => {
     if (typeof window.fbRegister !== 'function') {
@@ -3544,10 +3684,16 @@ window.doFacebookSignIn = doFacebookSignIn;
 function doForgotPassword() {
   const modal = document.getElementById('forgotPassModal');
   if (!modal) return;
-  // حط الإيميل من حقل الدخول لو في
-  const loginEmail = document.getElementById('loginUser');
+  // ★ نملي الإيميل: من currentUser أولاً، ثم من حقل الدخول
   const inp = document.getElementById('forgotEmailInput');
-  if (inp && loginEmail && loginEmail.value) inp.value = loginEmail.value.trim().toLowerCase();
+  if (inp) {
+    const _cu = window.currentUser;
+    const _loginEmail = document.getElementById('loginUser');
+    const _email = (_cu && _cu.username && _cu.username.includes('@') ? _cu.username : null)
+      || (_loginEmail && _loginEmail.value ? _loginEmail.value.trim().toLowerCase() : null)
+      || '';
+    inp.value = _email;
+  }
   // صفّر الحقول
   const p1 = document.getElementById('forgotNewPass');
   const p2 = document.getElementById('forgotConfirmPass');
@@ -3573,8 +3719,11 @@ function _sendForgotEmail() {
   const confPass = (document.getElementById('forgotConfirmPass').value || '').trim();
   const errEl    = document.getElementById('forgotPassErr');
 
-  if (!email || !email.includes('@')) { errEl.textContent = '⚠️ اكتب إيميلك الصح'; errEl.style.color='#FF9E9E'; return; }
-  if (!newPass || newPass.length < 6) { errEl.textContent = '⚠️ الباسورد لازم ٦ أحرف على الأقل'; errEl.style.color='#FF9E9E'; return; }
+  // ★ لو الإيميل فاضي خذه من currentUser
+  const _finalEmail = email || (window.currentUser && window.currentUser.username) || '';
+  if (!_finalEmail || !_finalEmail.includes('@')) { errEl.textContent = '⚠️ اكتب إيميلك الصح'; errEl.style.color='#FF9E9E'; return; }
+  if (_finalEmail !== email) { email = _finalEmail; }
+  if (!newPass || newPass.length < 4) { errEl.textContent = '⚠️ الباسورد لازم ٤ أحرف على الأقل'; errEl.style.color='#FF9E9E'; return; }
   if (newPass !== confPass) { errEl.textContent = '⚠️ الباسورد مش متطابق'; errEl.style.color='#FF9E9E'; return; }
 
   // ★ خطوة ١: احفظ محلياً فوراً
@@ -3589,28 +3738,39 @@ function _sendForgotEmail() {
     localStorage.setItem('nour_last_user', email);
   } catch(e) {}
 
+  // ★ أغلق الـ keyboard من كل inputs الـ modal
+  ['forgotEmailInput','forgotNewPass','forgotConfirmPass'].forEach(function(id){
+    var el = document.getElementById(id); if(el) el.blur();
+  });
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 
-  window._loggedOut = false;
-  window._cancelBgAuth = false;
+  // كتابة الباسورد في Firebase في الخلفية
   if (typeof window.fbForgotPasswordLogin === 'function') {
     window.fbForgotPasswordLogin(email, newPass, () => {}, () => {});
   }
 
-  // أظهر رسالة نجاح مؤقتة ثم reload تلقائي
-  const _modal = document.getElementById('forgotPassModal');
-  if (_modal) {
-    const _inner = _modal.querySelector('div');
-    if (_inner) _inner.innerHTML =
-      '<div style="text-align:center;padding:30px 0;">' +
-      '<div style="font-size:52px;margin-bottom:12px;">✅</div>' +
-      '<div style="font-size:18px;font-weight:700;color:var(--gold);font-family:Cairo,sans-serif;">تم حفظ الباسورد!</div>' +
-      '<div style="font-size:13px;color:rgba(245,217,139,0.45);font-family:Cairo,sans-serif;margin-top:8px;">جاري الدخول...</div>' +
-      '</div>';
+  // ★ أغلق الـ modal أولاً — مهم جداً على iOS قبل أي animation
+  const _fpm = document.getElementById('forgotPassModal');
+  if (_fpm) {
+    _fpm.style.display = 'none';
+    _fpm.style.pointerEvents = 'none';
+    _fpm.style.visibility = 'hidden';
   }
+  window.scrollTo(0, 0);
 
-  // reload بعد ثانية — يعطي الـ keyboard وقت يقفل ويكتب bypassAuth
-  setTimeout(() => { window.location.reload(); }, 1000);
+  // ★ animation في عنصر مؤقت منفصل تماماً عن الـ modal
+  const _overlay = document.createElement('div');
+  _overlay.style.cssText = 'position:fixed;inset:0;z-index:5000;display:flex;align-items:center;justify-content:center;pointer-events:none;';
+  _overlay.innerHTML =
+    '<div style="background:linear-gradient(160deg,#1e1508,#12100a);border:1px solid rgba(201,151,58,0.4);border-radius:20px;padding:32px 40px;text-align:center;pointer-events:none;box-shadow:0 8px 40px rgba(0,0,0,0.7);">' +
+    '<div style="font-size:64px;margin-bottom:12px;animation:popIn .4s ease;pointer-events:none;">✅</div>' +
+    '<div style="font-size:18px;font-weight:900;color:#C9973A;font-family:Cairo,sans-serif;pointer-events:none;">تم تغيير كلمة المرور</div>' +
+    '<div style="font-size:12px;color:rgba(245,217,139,0.5);margin-top:6px;font-family:Cairo,sans-serif;pointer-events:none;">تم الحفظ بنجاح 🤍</div>' +
+    '</div>';
+  document.body.appendChild(_overlay);
+  setTimeout(() => {
+    if (_overlay.parentNode) _overlay.parentNode.removeChild(_overlay);
+  }, 1500);
 }
 
 window.doForgotPassword = doForgotPassword;
@@ -3700,7 +3860,7 @@ function doConfirmReset() {
   const oobCode = window._resetOobCode;
   const email   = window._resetEmail;
 
-  if (!pass || pass.length < 6) { errEl.textContent = '⚠️ لازم ٦ أحرف على الأقل'; return; }
+  if (!pass || pass.length < 6) { errEl.textContent = '⚠️ لازم ٤ أحرف على الأقل'; return; }
   if (pass !== pass2) { errEl.textContent = '⚠️ كلمة المرور مش متطابقة'; return; }
   if (!oobCode || !email) { errEl.textContent = '❌ الرابط خاطئ — اطلب رابط جديد'; return; }
 
@@ -3725,7 +3885,7 @@ function doConfirmReset() {
       errEl.style.color = '#FF9E9E';
       if (code === 'auth/expired-action-code') errEl.textContent = '❌ الرابط انتهت صلاحيته — اطلب رابط جديد';
       else if (code === 'auth/invalid-action-code') errEl.textContent = '❌ الرابط مستخدم قبل كده — اطلب رابط جديد';
-      else if (code === 'auth/weak-password') errEl.textContent = '⚠️ الباسورد ضعيف — ٦ أحرف على الأقل';
+      else if (code === 'auth/weak-password') errEl.textContent = '⚠️ الباسورد ضعيف — ٤ أحرف على الأقل';
       else errEl.textContent = '❌ مشكلة: ' + code;
     });
   }
@@ -3758,33 +3918,32 @@ function guestLogin() {
 function loginSuccess(username, data, isGuest=false) {
   // لو في auto-login حصل بالفعل لنفس المستخدم — اجمع البيانات (خذ الأعلى)
   if (window.currentUser && window.currentUser.username === username) {
+    const cu = window.currentUser;
     if (data) {
-      const cu = window.currentUser;
       cu.totalScore   = Math.max(cu.totalScore   || 0, data.totalScore   || 0);
       cu.totalGames   = Math.max(cu.totalGames   || 0, data.totalGames   || 0);
       cu.totalHasanat = Math.max(cu.totalHasanat || 0, data.totalHasanat || 0);
       cu.streak       = Math.max(cu.streak       || 0, data.streak       || 0);
       if (data.lastPlay) cu.lastPlay = data.lastPlay;
       if (data.password) cu.password = data.password;
-      currentUser = cu;
-      window.currentUser = cu;
-      // لو فيه نقاط جديدة جاية من Firebase — ارفعها محلياً
+      // ★ الاسم: خذ الاسم الجديد لو أحسن من الموجود
+      if (data.name && !data.name.includes('@') && data.name.trim()) cu.name = data.name.trim();
       const _lu = getUsers();
       if (_lu[username]) {
         _lu[username].totalScore   = cu.totalScore;
         _lu[username].totalGames   = cu.totalGames;
         _lu[username].totalHasanat = cu.totalHasanat;
         _lu[username].streak       = cu.streak;
+        if (cu.name) _lu[username].name = cu.name;
         saveUsers(_lu);
       }
-      updateHomeStats();
     }
-    // لو اللوجين screen لا يزال ظاهر، أخفيه
-    const ls = document.getElementById('loginScreen');
-    if (ls && !ls.classList.contains('hide')) _finishLogin(username, isGuest);
+    currentUser = cu;
+    window.currentUser = cu;
+    _finishLogin(username, isGuest);
     return;
   }
-  // لو في مستخدم آخر logged in فعلاً (مش مجرد بقايا session ولا registering) — لا تستبدله
+  // لو في مستخدم آخر logged in فعلاً — لا تستبدله
   if (window.currentUser && window.currentUser.username !== username && !window.currentUser._fromAuth && !window._registering) return;
   currentUser = { username, isGuest, ...(data || {}) };
   window.currentUser = currentUser;
@@ -3813,7 +3972,7 @@ function editDisplayName() {
         ' style="width:100%;background:rgba(201,151,58,0.1);border:1.5px solid rgba(201,151,58,0.4);border-radius:12px;padding:10px 14px;font-family:Cairo,sans-serif;font-size:15px;color:var(--gold);direction:rtl;outline:none;text-align:right;box-sizing:border-box;">' +
         '<div style="display:flex;gap:8px;margin-top:12px;">' +
           '<button onclick="_cancelNameEdit()" style="flex:1;padding:10px;background:rgba(255,254,249,0.05);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;font-size:14px;cursor:pointer;">إلغاء</button>' +
-          '<button onclick="_saveNameEdit()" style="flex:2;padding:10px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:10px;font-family:Cairo,sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;">حفظ ✓</button>' +
+          '<button onclick="_saveNameEdit()" ontouchend="event.preventDefault();_saveNameEdit();" style="flex:2;padding:10px;background:linear-gradient(135deg,#C9973A,#E8C46A);border:none;border-radius:10px;font-family:Cairo,sans-serif;font-size:14px;font-weight:900;color:#1a1208;cursor:pointer;touch-action:manipulation;">حفظ ✓</button>' +
         '</div>' +
       '</div>';
     document.body.appendChild(overlay);
@@ -3923,12 +4082,33 @@ window.doDeleteAccount = doDeleteAccount;
 
 
 function _finishLogin(username, isGuest) {
-  document.getElementById('loginScreen').classList.add('hide');
+  // ★ إخفاء loginScreen بكل الطرق
+  const _lsEl = document.getElementById('loginScreen');
+  if (_lsEl) {
+    _lsEl.classList.add('hide');
+    _lsEl.style.display = 'none';
+    _lsEl.style.pointerEvents = 'none';
+    _lsEl.style.visibility = 'hidden';
+  }
+  // ★ homeScreen: أضف show بدون ما نشيله من باقي الـ screens أولاً (يمنع flicker على الموبايل)
+  const _hsEl = document.getElementById('homeScreen');
+  if (_hsEl) _hsEl.classList.add('show');
+  window.scrollTo(0, 0);
+
+  // ★ الاسم: جرب كل المصادر بالترتيب
+  if (currentUser) {
+    const _n =
+      (currentUser.name && !currentUser.name.includes('@') ? currentUser.name : null) ||
+      (typeof window._getStoredName === 'function' ? window._getStoredName(username) : null) ||
+      (() => { try { return JSON.parse(localStorage.getItem('nour_users')||'{}')[username]?.name; } catch(e){} return null; })();
+    if (_n && !_n.includes('@') && _n.trim()) currentUser.name = _n.trim();
+  }
   const _disp = _displayName(currentUser || { username });
   const _el = document.getElementById('userNameDisplay');
   _el.innerHTML = '👤 ' + _disp + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
-  if (typeof window.fbSignInAnon === 'function') window.fbSignInAnon();
-  if (typeof window.fbWatchName === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
+  if (typeof window.fbSignInAnon === 'function' && !isGuest) window.fbSignInAnon();
+  if (typeof window.fbWatchName     === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchName(username);
+  if (typeof window.fbWatchUserData  === 'function' && !isGuest && username && !username.includes('ضيف')) window.fbWatchUserData(username);
   if (!isGuest) {
     try { localStorage.setItem('nour_last_user', username); } catch(e) {}
   }
@@ -3939,7 +4119,22 @@ function _finishLogin(username, isGuest) {
   populateSurahFilter();
   populateJuzFilter();
   loadMemorizedSurahs();
-  showToast('مرحباً ' + _disp + '! 🌙');
+  showToast('مرحباً ' + (_disp||'') + '! 🌙');
+
+  // ★ safety net: لو الاسم مش ظهر صح، بعد ثانية نحاول تاني من كل المصادر
+  setTimeout(() => {
+    const _safeEl = document.getElementById('userNameDisplay');
+    if (!_safeEl || !window.currentUser) return;
+    const _cur = window.currentUser;
+    const _safeName = _cur.name ||
+      (typeof window._getStoredName === 'function' ? window._getStoredName(_cur.username) : null) ||
+      (() => { try { return JSON.parse(localStorage.getItem('nour_users')||'{}')[_cur.username]?.name; } catch(e){} return null; })();
+    if (_safeName && !_safeName.includes('@') && !_safeEl.textContent.includes(_safeName)) {
+      _cur.name = _safeName;
+      window.currentUser = _cur;
+      _safeEl.innerHTML = '👤 ' + _safeName + ' <button onclick="event.stopPropagation();editDisplayName()" title="غيّر اسمك للعرض" style="background:none;border:none;font-size:13px;cursor:pointer;color:var(--gold);opacity:.7;padding:2px 4px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">✏️</button>';
+    }
+  }, 1000);
 
 
   // ★ sync كامل من Firebase عند الدخول (مسجلين فقط)
@@ -3973,28 +4168,27 @@ function _finishLogin(username, isGuest) {
 }
 
 function doLogout() {
+  window._isLoggingOut = true;
   window._loggedOut = true;
   window._cancelBgAuth = true;
-  if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName(); // ★ أوقف أي background Firebase auth
-  saveCurrentUser();
-  window._pendingAutoLogin = null;
-  try { clearTimeout(window._autoLoginFallbackTimer); } catch (e) {}
+  if (typeof window.fbUnwatchName === 'function') window.fbUnwatchName();
   if (typeof window.fbUnwatchMistakes === 'function') window.fbUnwatchMistakes();
   if (typeof window.fbUnwatchUserData === 'function') window.fbUnwatchUserData();
+  saveCurrentUser();
+  try { clearTimeout(window._autoLoginFallbackTimer); } catch(e) {}
   currentUser = null;
   window.currentUser = null;
+  window._pendingAutoLogin = null;
   window._lbAllList = null;
   try { localStorage.removeItem('nour_last_user'); } catch(e) {}
-  // ★ مش بنعمل _resetAuthDone هنا عشان ما يدخّلوش تاني قبل ما signOut يخلص
-  // onAuthStateChanged(null) هو اللي هيعمل _authDone = false لما signOut يكتمل
   if (typeof window.fbLogout === 'function') window.fbLogout();
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('show'));
-  document.getElementById('homeScreen') && document.getElementById('homeScreen').classList.add('show');
-  // أخفِ أي overlay قد يكون مفتوح (مثل تعديل الاسم)
-  const _ov = document.getElementById('_nameEditOverlay');
-  if (_ov) _ov.style.display = 'none';
+  // ★ أظهر loginScreen مباشرة بدون reload
   const _lsOut = document.getElementById('loginScreen');
-  if (_lsOut) { _lsOut.classList.remove('hide'); _lsOut.style.display = ''; _lsOut.style.pointerEvents = ''; _lsOut.style.visibility = ''; }
+  if (_lsOut) {
+    _lsOut.style.cssText = '';
+    _lsOut.classList.remove('hide');
+  }
+  setTimeout(() => { window._isLoggingOut = false; }, 1500);
 }
 
 function saveCurrentUser() {
@@ -6896,6 +7090,8 @@ function goHome() {
 
 window.goHome = goHome;
 
+
+
 // ============================================================
 // ===== DAILY MISTAKES =====
 // ============================================================
@@ -8338,13 +8534,13 @@ function multiCreateRoom() {
         if (!allSurah) questions = questions.slice(0, parseInt(qCountRaw) || 20);
       } else {
         const qCount = parseInt(qCountRaw) || 20;
-        const allNums = Object.keys(QURAN_LOCAL).map(Number).sort(() => Math.random()-0.5);
-        for (const num of allNums) {
-          if (questions.length >= qCount * 3) break;
-          const qs = buildReviewQuestions(SURAHS_META[num-1]?.[0] || '');
-          questions = questions.concat(qs);
+        // ★ عشوائي حقيقي من كل QURAN_DB (كل المستويات + كل السور)
+        const _allQ = Object.values(QURAN_DB).flat();
+        for (let i = _allQ.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [_allQ[i], _allQ[j]] = [_allQ[j], _allQ[i]];
         }
-        questions = questions.sort(() => Math.random()-0.5).slice(0, qCount);
+        questions = _allQ.slice(0, qCount);
       }
     } finally {
       state.level = _savedLevel;
@@ -8578,14 +8774,25 @@ function _startMultiGame() {
   multiState.myScore = 0;
   multiState._peakScore = 0;
   multiState._scoreSavedThisRound = false;
-  multiState._startedAt = Date.now(); // ★ نحفظ وقت البداية للكشف عن جولة جديدة
-  // ★ تصفير كل الـ caches عشان ما يظهرش نقاط الجولة السابقة
+  multiState._startedAt = Date.now();
+  multiState._roundId = Date.now();
   window._lockedScores = {};
   window._prevMultiScores = {};
-  // تصفير عداد النقاط على الشاشة
+  // ★ تصفير scores في الـ cache المحلي عشان multiLiveScores تبدأ من ٠ فوراً
+  if (window._multiRoomCache && window._multiRoomCache.players) {
+    Object.keys(window._multiRoomCache.players).forEach(function(k) {
+      if (window._multiRoomCache.players[k]) {
+        window._multiRoomCache.players[k].score    = 0;
+        window._multiRoomCache.players[k].answered = false;
+        window._multiRoomCache.players[k].done     = false;
+      }
+    });
+  }
   const scoreEl = document.getElementById('multiMyScore');
   if (scoreEl) scoreEl.textContent = toArabicNum(0);
-  document.getElementById('multiWaiting').style.display = 'none';
+  document.getElementById('multiResults').style.display  = 'none';
+  document.getElementById('multiLiveScores').innerHTML   = '';
+  document.getElementById('multiWaiting').style.display  = 'none';
   document.getElementById('multiGameArea').style.display = 'block';
   document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
   _renderMultiQuestion();
@@ -8818,6 +9025,16 @@ function _multiAnswer(chosen, correct, q, clickedBtn, e) {
   }
   document.getElementById('multiMyScore').textContent = toArabicNum(multiState.myScore);
 
+  // ★ تحديث فوري للـ cache المحلي عشان _updateMultiLiveScores تعكس السكور الجديد بدون انتظار Firebase
+  if (window._multiRoomCache && window._multiRoomCache.players) {
+    const _pk = multiState.playerKey || multiState.playerName;
+    if (window._multiRoomCache.players[_pk]) {
+      window._multiRoomCache.players[_pk].score    = multiState.myScore;
+      window._multiRoomCache.players[_pk].answered = true;
+    }
+  }
+  _updateMultiLiveScores();
+
   wrap.querySelectorAll('button').forEach(b => {
     const ch = b.dataset.ch;
     if (_norm(ch) === _norm(actualCorrect)) b.style.background = 'rgba(46,175,120,0.25)', b.style.borderColor = 'var(--emerald-light)', b.style.color = '#7DFFC9';
@@ -8955,6 +9172,8 @@ function _showMultiResults() {
   clearTimeout(multiState.answerTimer);
   clearInterval(multiState.questionTimer);
   multiState.phase = 'results';
+  // ★ session ID يمنع كتابة نتايج جولة قديمة فوق جولة جديدة
+  const _thisRoundId = multiState._roundId = Date.now();
 
   const pk = multiState.playerKey || multiState.playerName;
   const _myFinalName = multiState.playerName || (currentUser && (currentUser.name || currentUser.username)) || 'لاعب';
@@ -8971,8 +9190,8 @@ function _showMultiResults() {
         }
       };
       _saveDedicated(1);
-      setTimeout(() => _saveDedicated(1), 1500);
-      setTimeout(() => _saveDedicated(1), 4000);
+      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 1500);
+      setTimeout(() => { if (multiState._roundId === _thisRoundId) _saveDedicated(1); }, 4000);
     }
 
     const _finalScore = {
@@ -8988,9 +9207,9 @@ function _showMultiResults() {
         p.catch(() => { if (attempt < 3) setTimeout(() => _writeFinal(attempt + 1), 500 * attempt); });
       }
     };
-    _writeFinal(1);
-    setTimeout(() => _writeFinal(1), 2000);
-    setTimeout(() => _writeFinal(1), 5000);
+    if (multiState._roundId === _thisRoundId) _writeFinal(1);
+    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 2000);
+    setTimeout(() => { if (multiState._roundId === _thisRoundId) _writeFinal(1); }, 5000);
     if (multiState.isHost) {
       window.fbMulti.updateRoom(multiState.roomCode, { phase: 'finished' }).catch(() => {});
     }
@@ -9073,13 +9292,53 @@ function _showMultiResults() {
   document.getElementById('multiWinnerName').textContent = winner ? _bestName(winner[1]) : '';
   document.getElementById('multiWinnerMsg').textContent = isWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
 
-  document.getElementById('multiFinalScores').innerHTML = sorted.map(([u, p], i) =>
-    `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
-      <span style="font-size:22px;">${medals[i]||'👤'}</span>
-      <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
-      <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
-    </div>`
-  ).join('');
+  const _renderFinalScores = (sortedList) => {
+    document.getElementById('multiFinalScores').innerHTML = sortedList.map(([u, p], i) =>
+      `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(255,254,249,${i===0?'0.07':'0.03'});border-radius:12px;margin-bottom:6px;border:1px solid rgba(201,151,58,${i===0?'0.3':'0.1'});">
+        <span style="font-size:22px;">${medals[i]||'👤'}</span>
+        <span style="flex:1;font-size:15px;color:${i===0?'var(--gold)':'var(--cream)'};">${_bestName(p)}${u===pk?' (أنت)':''}</span>
+        <span style="font-size:18px;font-weight:900;color:var(--emerald-light);">${toArabicNum(_recordMax(u, _bestScore(p)))}</span>
+      </div>`
+    ).join('');
+  };
+  _renderFinalScores(sorted);
+
+  // ★ بعد ثانيتين: جيب النتايج الموحدة من Firebase وحدّث العرض
+  setTimeout(() => {
+    if (typeof window.fbMulti === 'undefined' || !multiState.roomCode) return;
+    // ★ نجيب النتايج الموحدة دايماً حتى لو بدأت جولة جديدة (النتايج بتفضل في multiResults)
+    const _resultsDiv = document.getElementById('multiResults');
+    if (!_resultsDiv || _resultsDiv.style.display === 'none') return;
+    window.fbMulti.getRoom(multiState.roomCode, (freshRoom) => {
+      if (!document.getElementById('multiResults') || document.getElementById('multiResults').style.display === 'none') return;
+      if (!freshRoom || !freshRoom.players) return;
+      const freshPlayers = { ...players, ...freshRoom.players };
+      // دمج: خذ الأعلى لكل لاعب
+      Object.keys(freshRoom.players).forEach(u => {
+        const fp = freshRoom.players[u];
+        if (!fp) return;
+        if (!freshPlayers[u]) freshPlayers[u] = fp;
+        else freshPlayers[u] = {
+          ...freshPlayers[u],
+          finalScore: Math.max(_bestScore(freshPlayers[u]), _bestScore(fp)),
+          score:      Math.max(_bestScore(freshPlayers[u]), _bestScore(fp)),
+          name:       fp.name || freshPlayers[u].name,
+        };
+      });
+      const freshSorted = Object.entries(freshPlayers)
+        .filter(([, p]) => p != null)
+        .sort((a,b) => _recordMax(b[0], _bestScore(b[1])) - _recordMax(a[0], _bestScore(a[1])));
+      const freshWinner = freshSorted[0];
+      if (freshWinner) {
+        const freshIsWinner = freshWinner[0] === pk;
+        const nameEl = document.getElementById('multiWinnerName');
+        const msgEl  = document.getElementById('multiWinnerMsg');
+        if (nameEl) nameEl.textContent = _bestName(freshWinner[1]);
+        if (msgEl)  msgEl.textContent = freshIsWinner ? 'أنت الفائز! بارك الله فيك 🌟' : 'الفائز بالتحدي — بالتوفيق المرة الجاية!';
+      }
+      _renderFinalScores(freshSorted);
+    });
+  }, 1500);
 
   // ★ بعد ثانية، نجيب أحدث بيانات من Firebase ونعيد العرض عشان كل اللاعيبة يشوفوا نفس النتيجة
   //    (ده بيحل مشكلة التضارب لو كتابة لاعب على Firebase وصلت متأخرة)
@@ -9177,27 +9436,25 @@ function multiPlayAgain() {
   clearInterval(multiState.questionTimer);
   clearTimeout(multiState.answerTimer);
 
-  // غير المضيف: يفضل في النتايج ويستنى المضيف — ما يرجعش لقاعة الانتظار
-  if (!multiState.isHost) {
-    const btn = document.getElementById('multiPlayAgainBtn');
-    if (btn) {
-      btn.textContent = '⏳ في انتظار المضيف...';
-      btn.disabled = true;
-      btn.style.opacity = '0.6';
-      btn.style.cursor = 'not-allowed';
-    }
-    // ابعت إشارة إنك مستعد
-    if (typeof window.fbMulti !== 'undefined' && multiState.roomCode) {
-      const pk = multiState.playerKey || multiState.playerName;
-      window.fbMulti.updatePlayer(multiState.roomCode, pk, { requestRematch: true, lastSeen: Date.now() }).catch(() => {});
-    }
-    showToast('⏳ في انتظار المضيف يبدأ جولة جديدة...');
+  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
+  if (!room) { showMultiScreen(); return; }
+
+  // ★ منع الضغط المزدوج — لو الغرفة بالفعل في playing انتظر الـ listener
+  if (room.phase === 'playing') {
+    showToast('⏳ اللعبة شغّالة...');
     return;
   }
 
-  // المضيف: نفس الإعدادات + أسئلة جديدة + تصفير النقاط — وتبدأ الجولة فورًا أوتوماتيك
-  const room = _getRoomData(multiState.roomCode) || window._multiRoomCache;
-  if (!room) { showMultiScreen(); return; }
+  // ★ إخفاء النتايج القديمة فوراً لكل من ضغط الزرار
+  const _resEl = document.getElementById('multiResults');
+  if (_resEl) {
+    _resEl.innerHTML = '<div style="text-align:center;padding:40px 20px;color:rgba(245,217,139,0.5);font-family:Cairo,sans-serif;font-size:15px;">⏳ جاري تحضير الجولة الجديدة...</div>';
+  }
+
+  // ★ أي لاعب يقدر يبدأ — الأول اللي بيدوس بيكتب على Firebase
+  // الباقيين بيشوفوا phase=playing من الـ listener ويبدأوا تلقائي
+  const btn = document.getElementById('multiPlayAgainBtn');
+  if (btn) { btn.textContent = '⏳ جاري...'; btn.disabled = true; }
   showToast('🔄 جولة جديدة بأسئلة جديدة...');
 
   const newQs = _rebuildMultiQuestions(room);
@@ -9333,12 +9590,7 @@ function _startPolling() {
       }
       // ★ لو المضيف خرج مؤقتاً (واتساب مثلاً) — انتظر ولا تقفل
       if (room.hostOffline && !multiState.isHost) {
-        // المضيف خرج مؤقتاً — أظهر رسالة انتظار بس ما تمسحش الغرفة
-        const _offlineFor = Date.now() - (room.hostOfflineAt || Date.now());
-        if (_offlineFor > 60000) { // لو زاد عن دقيقة
-          showToast('⏳ المضيف غاب أكتر من دقيقة...');
-        }
-        // استمر في المراقبة
+        // المضيف خرج مؤقتاً — استمر في المراقبة بدون رسائل
       }
       window._multiRoomCache = room;
       // Keep alive — كل ٣٠ ثانية بس عشان ما نسبّبش rate limiting
@@ -9358,7 +9610,7 @@ function _startPolling() {
           multiState._peakScore = 0;
           multiState.qIndex = 0;
           multiState._scoreSavedThisRound = false;
-          multiState._startedAt = room.startedAt || Date.now(); // ★ احفظ وقت البداية
+          multiState._startedAt = room.startedAt || Date.now();
           window._lockedScores = {};
           window._prevMultiScores = {};
           const _expFn = window._expandMultiQ || (q => q);
@@ -9366,13 +9618,38 @@ function _startPolling() {
           multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
           multiState.qTime = room.qTime || 15;
           document.getElementById('multiMyScore').textContent = toArabicNum(0);
-          document.getElementById('multiWaiting').style.display = 'none';
+          // ★ إخفاء النتايج القديمة وتصفير النقاط اللحظية
+          document.getElementById('multiResults').style.display  = 'none';
+          document.getElementById('multiLiveScores').innerHTML   = '';
+          document.getElementById('multiWaiting').style.display  = 'none';
           document.getElementById('multiGameArea').style.display = 'block';
           document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
           _renderMultiQuestion();
         } else {
           _updateWaitingUI();
         }
+      } else if (multiState.phase === 'results' && room.phase === 'playing') {
+        // ★ المضيف بدأ جولة جديدة والباقيين في النتايج — ابدأ الجولة الجديدة
+        multiState.myScore = 0;
+        multiState._peakScore = 0;
+        multiState.qIndex = 0;
+        multiState._scoreSavedThisRound = false;
+        multiState._startedAt = room.startedAt || Date.now();
+        window._lockedScores = {};
+        window._prevMultiScores = {};
+        multiState._roundId = Date.now(); // ★ يبطل timeouts الجولة السابقة
+        const _expFn2 = window._expandMultiQ || (q => q);
+        multiState.questions = (room.questions || []).map(_expFn2);
+        multiState.totalQ = room.totalQ || (room.questions ? room.questions.length : 0);
+        multiState.qTime = room.qTime || 15;
+        document.getElementById('multiMyScore').textContent = toArabicNum(0);
+        document.getElementById('multiResults').style.display  = 'none';
+        document.getElementById('multiLiveScores').innerHTML   = '';
+        document.getElementById('multiWaiting').style.display  = 'none';
+        document.getElementById('multiGameArea').style.display = 'block';
+        document.getElementById('multiQTotal').textContent = toArabicNum(multiState.totalQ);
+        multiState.phase = 'playing';
+        _renderMultiQuestion();
       } else if (multiState.phase === 'playing') {
         _updateMultiLiveScores();
         // ★ لو الغرفة انتهت (finished) → اعرض النتائج فوراً
@@ -9499,7 +9776,7 @@ function _stopPolling() {
     <div style="text-align:center;margin-bottom:18px;">
       <div style="font-size:36px;margin-bottom:4px;">🔑</div>
       <div style="font-size:17px;font-weight:700;color:var(--gold);font-family:'Cairo',sans-serif;">تغيير كلمة المرور</div>
-      <div style="font-size:11px;color:rgba(245,217,139,0.4);margin-top:4px;">اكتب الباسورد الجديد وهيتحفظ في الداتا بيز فوراً</div>
+      <div style="font-size:11px;color:rgba(245,217,139,0.4);margin-top:4px;">اكتب الباسورد الجديد (٤ أحرف على الأقل)</div>
     </div>
     <div class="login-field">
       <label>البريد الإلكتروني</label>
@@ -9510,7 +9787,7 @@ function _stopPolling() {
     <div class="login-field">
       <label>كلمة المرور الجديدة</label>
       <div class="pw-wrap">
-        <input type="password" id="forgotNewPass" autocomplete="new-password" placeholder="٦ أحرف على الأقل"
+        <input type="password" id="forgotNewPass" autocomplete="new-password" placeholder="٤ أحرف على الأقل"
           style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:12px 16px 12px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;">
         <button type="button" class="pw-eye" onclick="togglePw('forgotNewPass',this)">👁</button>
       </div>
@@ -9562,7 +9839,7 @@ function _stopPolling() {
     <div class="login-field">
       <label>كلمة المرور الجديدة</label>
       <div class="pw-wrap">
-        <input type="password" id="resetNewPass" autocomplete="new-password" placeholder="٦ أحرف على الأقل" style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:13px 16px 13px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;transition:all .25s;">
+        <input type="password" id="resetNewPass" autocomplete="new-password" placeholder="٤ أحرف على الأقل" style="width:100%;background:rgba(255,254,249,0.04);border:1.5px solid rgba(201,151,58,0.2);border-radius:14px;padding:13px 16px 13px 40px;font-family:'Cairo',sans-serif;font-size:15px;color:var(--cream);direction:rtl;outline:none;transition:all .25s;">
         <button type="button" class="pw-eye" onclick="togglePw('resetNewPass',this)">👁</button>
       </div>
     </div>
